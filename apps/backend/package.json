@@ -1,6 +1,6 @@
 {
   "name": "@gate-crossex/backend",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "license": "AGPL-3.0-only",
   "type": "module",
   "scripts": {
@@ -17,9 +17,9 @@
     "@fastify/rate-limit": "10.3.0",
     "@fastify/static": "10.1.2",
     "@fastify/websocket": "11.2.0",
-    "@gate-crossex/domain": "0.2.3",
-    "@gate-crossex/public-data": "0.2.3",
-    "@gate-crossex/shared-types": "0.2.3",
+    "@gate-crossex/domain": "0.2.4",
+    "@gate-crossex/public-data": "0.2.4",
+    "@gate-crossex/shared-types": "0.2.4",
     "@napi-rs/keyring": "1.3.0",
     "better-sqlite3": "12.4.1",
     "decimal.js": "10.6.0",
