@@ -1,1 +1,1 @@
-{"name":"@gate-crossex/shared-types","version":"0.2.2","license":"AGPL-3.0-only","type":"module","main":"dist/index.js","types":"dist/index.d.ts","scripts":{"build":"tsc -p tsconfig.json","typecheck":"tsc -p tsconfig.json --noEmit","test":"vitest run"},"dependencies":{"zod":"4.1.12"}}
+{"name":"@gate-crossex/shared-types","version":"0.2.3","license":"AGPL-3.0-only","type":"module","main":"dist/index.js","types":"dist/index.d.ts","scripts":{"build":"tsc -p tsconfig.json","typecheck":"tsc -p tsconfig.json --noEmit","test":"vitest run"},"dependencies":{"zod":"4.1.12"}}
