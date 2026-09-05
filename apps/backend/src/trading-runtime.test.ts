@@ -339,6 +339,70 @@ describe('open-order quiescence', () => {
     expect(runtime.getOrder(order.id).state).toBe('NEW');
   });
 
+  it('adopts the id Gate lists for an order it will not address by ours, then cancels it by that id', async () => {
+    let clientOrderId = '';
+    const cancelled: string[] = [];
+    const { runtime, gateway } = await createHarness({
+      duringCreate: (order) => { clientOrderId = order.text ?? ''; },
+      // Gate never learned our remote id (an ambiguous submit); it knows the order as gate-77.
+      queryOrder: (orderId) => {
+        if (orderId !== 'gate-77') throw new GateApiError(400, 'TRADE_ORDER_NOT_FOUND_ERROR');
+        return remoteOrder({ order_id: 'gate-77', text: clientOrderId, state: cancelled.includes('gate-77') ? 'CANCELLED' : 'OPEN' });
+      },
+      duringCancel: (orderId) => {
+        if (orderId !== 'gate-77') throw new GateApiError(400, 'TRADE_ORDER_NOT_FOUND_ERROR');
+        cancelled.push(orderId);
+      },
+      openOrders: () => [remoteOrder({ order_id: 'gate-77', text: clientOrderId, state: 'OPEN' })],
+    });
+    const order = await runtime.createOrder(marketOrderInput);
+    const result = await runtime.quiesceOpenOrders({ timeoutMs: 50 });
+    expect(result.unresolved).toEqual([]);
+    const settled = runtime.getOrder(order.id);
+    expect(settled.state).toBe('CANCELLED');
+    expect(settled.remoteOrderId).toBe('gate-77');
+    // No cancel was wasted on the id Gate had already disowned.
+    expect(gateway.cancelledOrderIds).toEqual(['gate-77']);
+  });
+
+  it('closes an order Gate reports missing only after its open-order list confirms the absence', async () => {
+    let listed = true;
+    const { runtime, gateway } = await createHarness({
+      queryOrder: () => { throw new GateApiError(404, 'ORDER_NOT_FOUND'); },
+      duringCancel: () => { listed = false; },
+      openOrders: () => listed ? [remoteOrder({ order_id: 'remote-1', state: 'OPEN' })] : [],
+    });
+    const order = await runtime.createOrder(marketOrderInput);
+    const result = await runtime.quiesceOpenOrders({ timeoutMs: 50 });
+    expect(result.unresolved).toEqual([]);
+    expect(runtime.getOrder(order.id).state).toBe('REMOTE_NOT_FOUND');
+    // The list still showed the order, so a cancel went out by Gate's id before the row was closed.
+    expect(gateway.cancelledOrderIds).toEqual(['remote-1']);
+  });
+
+  it('keeps the historical 404 meaning when no open-order list is available', async () => {
+    const { runtime, gateway } = await createHarness({
+      queryOrder: () => { throw new GateApiError(404, 'ORDER_NOT_FOUND'); },
+    });
+    const order = await runtime.createOrder(marketOrderInput);
+    const result = await runtime.quiesceOpenOrders({ timeoutMs: 50 });
+    expect(result.unresolved).toEqual([]);
+    expect(runtime.getOrder(order.id).state).toBe('REMOTE_NOT_FOUND');
+    expect(gateway.cancelledOrderIds).toEqual([]);
+  });
+
+  it("treats Gate's not-found label on a cancel as settled once the open-order list agrees", async () => {
+    const { runtime } = await createHarness({
+      queryOrder: (orderId) => remoteOrder({ order_id: orderId, state: 'OPEN' }),
+      duringCancel: () => { throw new GateApiError(400, 'TRADE_ORDER_NOT_FOUND_ERROR'); },
+      openOrders: () => [],
+    });
+    const order = await runtime.createOrder(marketOrderInput);
+    const result = await runtime.quiesceOpenOrders({ timeoutMs: 50 });
+    expect(result.unresolved).toEqual([]);
+    expect(runtime.getOrder(order.id).state).toBe('REMOTE_NOT_FOUND');
+  });
+
   it('still cancels when only the first lookup fails transiently', async () => {
     let cancelled = false;
     let lookups = 0;

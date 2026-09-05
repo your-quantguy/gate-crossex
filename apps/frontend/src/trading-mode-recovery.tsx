@@ -32,6 +32,6 @@ export function UnresolvedOrdersNotice({ orders, retrying, onRetry }: Unresolved
         {retrying ? t('Retrying…') : t('Retry reconciliation')}
       </button>
     </div>
-    <small>{t('If an order is still open on Gate, cancel it there first and retry. Read-only mode stays available meanwhile.')}</small>
+    <small>{t('Retry sends the cancel requests again from this terminal. If Gate keeps reporting an order open after a few retries, wait a minute and retry; read-only mode stays available meanwhile.')}</small>
   </section>;
 }

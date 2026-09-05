@@ -2,6 +2,13 @@
 
 All notable changes to Gate CrossEx are documented in this file.
 
+## [0.2.4] - 2026-09-05
+
+### Fixed
+
+- Reconciliation now gets stuck orders cancelled by itself when Gate will not act on the id the terminal holds: it adopts the id Gate lists for the order and cancels by that id, treats Gate's `TRADE_ORDER_NOT_FOUND_ERROR` like a 404, and closes a local row only after Gate's open-order list confirms the order is gone.
+- The blocked-activation panel no longer asks users to cancel orders on a Gate website, which CrossEx does not have; Retry re-sends the cancellations from the terminal and Gate's not-found responses are explained in plain language.
+
 ## [0.2.3] - 2026-09-05
 
 ### Fixed

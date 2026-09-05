@@ -1,6 +1,6 @@
 {
   "name": "@gate-crossex/public-data",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "license": "AGPL-3.0-only",
   "type": "module",
   "main": "dist/index.js",
@@ -11,7 +11,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@gate-crossex/shared-types": "0.2.3",
+    "@gate-crossex/shared-types": "0.2.4",
     "zod": "4.1.12"
   }
 }

@@ -848,7 +848,7 @@ export class TradingRuntime {
           const refreshed = await this.refreshOrderFromRemote(id);
           resolved = refreshed !== null && refreshed.state !== 'PENDING_SUBMIT';
         } catch (error) {
-          if (error instanceof GateApiError && error.statusCode === 404) {
+          if (isRemoteOrderMissing(error)) {
             this.database.prepare("UPDATE execution_orders SET state = 'FAIL', updated_at = ? WHERE id = ? AND state = 'PENDING_SUBMIT'")
               .run(new Date().toISOString(), id);
             const order = this.getOrder(id);
@@ -864,20 +864,21 @@ export class TradingRuntime {
     timer.unref?.();
   }
 
-  async cancelOrder(id: string): Promise<ExecutionOrder> {
+  /** Send a cancel for a local order; `resend` repeats it for a row already marked PENDING_CANCEL. */
+  async cancelOrder(id: string, resend = false): Promise<ExecutionOrder> {
     const inFlight = this.cancelRequests.get(id);
     if (inFlight) return inFlight;
-    const cancellation = this.cancelOrderOnce(id).finally(() => {
+    const cancellation = this.cancelOrderOnce(id, resend).finally(() => {
       if (this.cancelRequests.get(id) === cancellation) this.cancelRequests.delete(id);
     });
     this.cancelRequests.set(id, cancellation);
     return cancellation;
   }
 
-  private async cancelOrderOnce(id: string): Promise<ExecutionOrder> {
+  private async cancelOrderOnce(id: string, resend = false): Promise<ExecutionOrder> {
     const order = this.getOrder(id);
     if (isTerminalOrderState(order.state)) throw new TradingRuntimeError('order_not_cancellable', 409);
-    if (order.state === 'PENDING_CANCEL') return order;
+    if (order.state === 'PENDING_CANCEL' && !resend) return order;
     const credentials = await this.vault.get(DEFAULT_CREDENTIAL_PROFILE);
     if (!credentials) throw new TradingRuntimeError('credential_not_configured', 409);
     const tradingGateway = this.gateway as Partial<TradingCrossExGateway>;
@@ -903,11 +904,15 @@ export class TradingRuntime {
     unresolved: UnresolvedOrderReport[];
   }> {
     const timeoutMs = options.timeoutMs ?? 20_000;
-    // Gate's open-order list is fetched at most once per quiesce, and only when an order needs it.
-    let remoteOpenIds: Promise<Set<string> | null> | null = null;
-    const openIds = () => (remoteOpenIds ??= this.remoteOpenOrderIds());
+    // Gate's open-order list is shared across the orders of one quiesce and fetched only when an
+    // order needs it; an order asks for a fresh copy after it has sent another cancel.
+    let listing: Promise<Map<string, string> | null> | null = null;
+    const remoteOpenOrders = (fresh = false) => {
+      if (fresh || listing === null) listing = this.remoteOpenOrders();
+      return listing;
+    };
     const results = await Promise.all(this.listOpenOrders(options.strategyId)
-      .map((initial) => this.quiesceOrder(initial, timeoutMs, openIds)));
+      .map((initial) => this.quiesceOrder(initial, timeoutMs, remoteOpenOrders)));
     const resolved: ExecutionOrder[] = [];
     const unresolved: UnresolvedOrderReport[] = [];
     for (const result of results) {
@@ -918,87 +923,129 @@ export class TradingRuntime {
   }
 
   /**
-   * Settle one open order: refresh, cancel if still open, confirm terminal. When Gate refuses to
-   * describe or cancel the order itself (a definitive 4xx or an unparseable body) its open-order
-   * list becomes the fallback authority: an id absent from that list is not open exposure and the
-   * row is closed as REMOTE_NOT_FOUND. Transient failures never count as evidence either way, and a
-   * successful lookup that still reports the order open always wins over the list.
+   * Settle one open order: look it up, cancel it if still open, confirm it terminal. Gate is the
+   * only place these orders can be cancelled, so when it will not act on the identifier we hold
+   * (a definitive 4xx, an unparseable body, or "no such order") its open-order list becomes the
+   * fallback authority: an order absent from that list is closed locally as REMOTE_NOT_FOUND, and
+   * an order the list knows under another id is adopted and cancelled by that id. Transient
+   * failures never count as evidence, and a successful lookup that still reports the order open
+   * wins over the list unless Gate itself said the order does not exist.
    */
   private async quiesceOrder(
     initial: ExecutionOrder,
     timeoutMs: number,
-    remoteOpenIds: () => Promise<Set<string> | null>,
+    remoteOpenOrders: (fresh?: boolean) => Promise<Map<string, string> | null>,
   ): Promise<{ resolved: ExecutionOrder } | { unresolved: UnresolvedOrderReport }> {
     const problems: string[] = [];
     const note = (problem: string) => { if (!problems.includes(problem)) problems.push(problem); };
+    const unresolved = () => ({ unresolved: { order: this.getOrder(initial.id), reason: problems.join('; ') || 'cancel_not_confirmed' } });
     let remoteState: string | null = null;
     let lookupRefused = false;
+    let remoteMissing = false;
     const lookup = async (id: string): Promise<ExecutionOrder | null> => {
       try {
         const refreshed = await this.refreshOrderFromRemote(id);
         if (refreshed) remoteState = refreshed.state;
         return refreshed;
       } catch (error) {
-        if (isRemoteOrderMissing(error)) return this.markOrderRemoteMissing(id);
-        if (isDefinitiveGateRefusal(error)) lookupRefused = true;
+        if (isRemoteOrderMissing(error)) remoteMissing = true;
+        else if (isDefinitiveGateRefusal(error)) lookupRefused = true;
         note(`lookup_failed:${describeQuiesceFailure(error)}`);
         return null;
       }
+    };
+    const cancel = async (id: string, resend = false): Promise<'accepted' | 'refused' | 'failed'> => {
+      try {
+        await this.cancelOrder(id, resend);
+        return 'accepted';
+      } catch (error) {
+        // A push may have settled the order between the lookup and the cancel; that is not a failure.
+        if (error instanceof TradingRuntimeError && error.code === 'order_not_cancellable') return 'accepted';
+        if (isRemoteOrderMissing(error)) remoteMissing = true;
+        note(`cancel_failed:${describeQuiesceFailure(error)}`);
+        return isDefinitiveGateRefusal(error) ? 'refused' : 'failed';
+      }
+    };
+    const awaitCancellation = async (id: string) => {
+      const settled = await this.awaitTerminalOrder(id, timeoutMs);
+      if (isTerminalOrderState(settled.state)) return { resolved: settled };
+      note(`cancel_not_confirmed:${settled.state}`);
+      return unresolved();
     };
 
     let current = await lookup(initial.id) ?? this.getOrder(initial.id);
     if (isTerminalOrderState(current.state)) return { resolved: current };
 
-    let cancelRefused = false;
-    if (current.state !== 'PENDING_CANCEL') {
-      try {
-        await this.cancelOrder(current.id);
-      } catch (error) {
-        // A push may have settled the order between the lookup and the cancel; that is not a failure.
-        if (!(error instanceof TradingRuntimeError && error.code === 'order_not_cancellable')) {
-          if (isDefinitiveGateRefusal(error)) cancelRefused = true;
-          note(`cancel_failed:${describeQuiesceFailure(error)}`);
-        }
+    let cancelOutcome: 'accepted' | 'refused' | 'failed' | 'skipped' = 'skipped';
+    if (!remoteMissing) {
+      if (current.state !== 'PENDING_CANCEL') {
+        cancelOutcome = await cancel(current.id);
+        current = this.getOrder(current.id);
+        if (isTerminalOrderState(current.state)) return { resolved: current };
       }
-      current = this.getOrder(current.id);
-      if (isTerminalOrderState(current.state)) return { resolved: current };
+      const confirmed = await lookup(current.id);
+      if (confirmed && isTerminalOrderState(confirmed.state)) return { resolved: confirmed };
+      // Gate can still describe the order and took the cancel, so a push or poll may settle it.
+      if (!lookupRefused && !remoteMissing && cancelOutcome !== 'refused') return awaitCancellation(current.id);
+      // Gate describes the order as open and refused the cancel for a reason other than "no such
+      // order": the list cannot override a live description.
+      if (remoteState !== null && !remoteMissing) return unresolved();
     }
 
-    const confirmed = await lookup(current.id);
-    if (confirmed && isTerminalOrderState(confirmed.state)) return { resolved: confirmed };
-
-    if (!lookupRefused && !cancelRefused) {
-      // Gate can still describe the order, so a push or poll may settle it within the timeout.
-      const settled = await this.awaitTerminalOrder(current.id, timeoutMs);
-      if (isTerminalOrderState(settled.state)) return { resolved: settled };
-      note(`cancel_not_confirmed:${settled.state}`);
-    } else if (remoteState === null) {
-      const openIds = await remoteOpenIds();
-      const listedOpen = openIds === null
-        ? null
-        : (current.remoteOrderId !== null && openIds.has(current.remoteOrderId)) || openIds.has(current.clientOrderId);
-      if (listedOpen === false) return { resolved: this.markOrderRemoteMissing(current.id) };
-      note(listedOpen ? 'listed_open_on_gate' : 'open_orders_unavailable');
+    const listed = await remoteOpenOrders();
+    if (listed === null) {
+      // Without the list, "no such order" keeps its plain meaning; anything else stays unresolved.
+      if (remoteMissing && remoteState === null) return { resolved: this.markOrderRemoteMissing(current.id) };
+      note('open_orders_unavailable');
+      return unresolved();
     }
-    return { unresolved: { order: this.getOrder(current.id), reason: problems.join('; ') || 'cancel_not_confirmed' } };
+    const listedId = listedOrderId(listed, current);
+    if (listedId === null) return { resolved: this.markOrderRemoteMissing(current.id) };
+
+    // Gate lists the order open, possibly under an id we never received (an ambiguous submit) or
+    // one that differs from ours. Cancel it by the id Gate uses.
+    if (listedId !== current.remoteOrderId) current = this.adoptRemoteOrderId(current.id, listedId);
+    remoteState = null;
+    lookupRefused = false;
+    remoteMissing = false;
+    const retried = await cancel(current.id, true);
+    current = this.getOrder(current.id);
+    if (isTerminalOrderState(current.state)) return { resolved: current };
+    const confirmedAgain = await lookup(current.id);
+    if (confirmedAgain && isTerminalOrderState(confirmedAgain.state)) return { resolved: confirmedAgain };
+    if (retried === 'accepted' && !lookupRefused && !remoteMissing) return awaitCancellation(current.id);
+    const relisted = await remoteOpenOrders(true);
+    if (relisted !== null && listedOrderId(relisted, current) === null) return { resolved: this.markOrderRemoteMissing(current.id) };
+    note('listed_open_on_gate');
+    return unresolved();
   }
 
-  /** Remote and client ids of every order Gate currently lists as open, or null when unavailable. */
-  private async remoteOpenOrderIds(): Promise<Set<string> | null> {
+  /** Every id Gate lists as open (remote, text, client) mapped to its order_id, or null when unavailable. */
+  private async remoteOpenOrders(): Promise<Map<string, string> | null> {
     const credentials = await this.vault.get(DEFAULT_CREDENTIAL_PROFILE);
     const tradingGateway = this.gateway as Partial<TradingCrossExGateway>;
     if (!credentials || !tradingGateway.queryOpenOrders) return null;
     try {
-      const ids = new Set<string>();
+      const ids = new Map<string, string>();
       for (const order of await tradingGateway.queryOpenOrders(credentials)) {
-        ids.add(order.order_id);
-        if (order.text) ids.add(order.text);
-        if (order.client_order_id) ids.add(order.client_order_id);
+        ids.set(order.order_id, order.order_id);
+        if (order.text) ids.set(order.text, order.order_id);
+        if (order.client_order_id) ids.set(order.client_order_id, order.order_id);
       }
       return ids;
     } catch {
       return null;
     }
+  }
+
+  /** Record the id Gate uses for an order we held under another, or no, remote id. */
+  private adoptRemoteOrderId(id: string, remoteOrderId: string): ExecutionOrder {
+    this.database.prepare('UPDATE execution_orders SET remote_order_id = ?, updated_at = ? WHERE id = ?')
+      .run(remoteOrderId, new Date().toISOString(), id);
+    const order = this.getOrder(id);
+    this.emit({ type: 'execution.update', payload: order });
+    this.notifyOrderListeners(order);
+    return order;
   }
 
   clearAuthenticatedAccountState(): void {
@@ -1203,8 +1250,16 @@ export function unresolvedOrderDetails(unresolved: UnresolvedOrderReport[]): Unr
   }));
 }
 
+/** Gate's own label for an order id it does not know; the HTTP status varies by endpoint. */
+const REMOTE_ORDER_MISSING_LABEL = 'TRADE_ORDER_NOT_FOUND_ERROR';
+
 function isRemoteOrderMissing(error: unknown): boolean {
-  return error instanceof GateApiError && error.statusCode === 404;
+  return error instanceof GateApiError && (error.statusCode === 404 || error.label === REMOTE_ORDER_MISSING_LABEL);
+}
+
+/** The order_id Gate lists for a local order, matched by our remote id first and then by client id. */
+function listedOrderId(listed: Map<string, string>, order: ExecutionOrder): string | null {
+  return (order.remoteOrderId !== null ? listed.get(order.remoteOrderId) : undefined) ?? listed.get(order.clientOrderId) ?? null;
 }
 
 /**
