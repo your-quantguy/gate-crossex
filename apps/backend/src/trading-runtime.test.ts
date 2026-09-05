@@ -38,11 +38,16 @@ interface GatewayScript {
   duringCreate?: (order: CrossExOrderRequest, remoteId: string) => void;
   createError?: () => Error;
   queryOrder?: (orderId: string) => GateCrossExOrder;
+  /** Runs when a cancel request arrives; throw to script a Gate refusal. */
+  duringCancel?: (orderId: string) => void;
+  /** Gate's account-wide open-order list; unscripted gateways fail the request like an outage. */
+  openOrders?: () => GateCrossExOrder[];
 }
 
 class ScriptedGateway implements TradingCrossExGateway {
   readonly createRequests: CrossExOrderRequest[] = [];
   readonly queriedOrderIds: string[] = [];
+  readonly cancelledOrderIds: string[] = [];
   positions: GateCrossExPortfolio['positions'] = [];
   leverage = '20';
   maxRiskPositionValue = '10000';
@@ -74,6 +79,8 @@ class ScriptedGateway implements TradingCrossExGateway {
   }
 
   async cancelOrder(_credentials: GateCredentials, orderId: string): Promise<GateOrderActionResponse> {
+    this.cancelledOrderIds.push(orderId);
+    this.script.duringCancel?.(orderId);
     return { order_id: orderId, text: '' };
   }
 
@@ -81,6 +88,11 @@ class ScriptedGateway implements TradingCrossExGateway {
     this.queriedOrderIds.push(orderId);
     if (!this.script.queryOrder) throw new GateApiError(0, 'ORDER_QUERY_UNSCRIPTED');
     return this.script.queryOrder(orderId);
+  }
+
+  async queryOpenOrders(): Promise<GateCrossExOrder[]> {
+    if (!this.script.openOrders) throw new GateApiError(0, 'NETWORK_ERROR');
+    return this.script.openOrders();
   }
 }
 
@@ -248,6 +260,100 @@ describe('trading runtime order submission', () => {
     const { runtime } = await createHarness({}, { liveTradingEnabled: false });
     await expect(runtime.createOrder(marketOrderInput)).rejects.toMatchObject({ code: 'live_trading_locked' });
     expect(runtime.listOrders()).toHaveLength(0);
+  });
+});
+
+describe('open-order quiescence', () => {
+  it('closes a row as REMOTE_NOT_FOUND when Gate refuses the lookup and its open-order list omits the order', async () => {
+    const { runtime, gateway } = await createHarness({
+      queryOrder: () => { throw new GateApiError(400, 'ORDER_QUERY_REFUSED'); },
+      openOrders: () => [],
+    });
+    const order = await runtime.createOrder(marketOrderInput);
+    const result = await runtime.quiesceOpenOrders({ timeoutMs: 50 });
+    expect(result.unresolved).toEqual([]);
+    expect(result.resolved.map((entry) => entry.state)).toEqual(['REMOTE_NOT_FOUND']);
+    expect(runtime.getOrder(order.id).state).toBe('REMOTE_NOT_FOUND');
+    // The cancel is still sent: a refused lookup says nothing about whether the order is live.
+    expect(gateway.cancelledOrderIds).toEqual(['remote-1']);
+  });
+
+  it('keeps the order open with the Gate reason when the open-order list still contains it', async () => {
+    const { runtime } = await createHarness({
+      queryOrder: () => { throw new GateApiError(400, 'ORDER_QUERY_REFUSED'); },
+      openOrders: () => [remoteOrder({ order_id: 'remote-1', state: 'OPEN' })],
+    });
+    const order = await runtime.createOrder(marketOrderInput);
+    const result = await runtime.quiesceOpenOrders({ timeoutMs: 50 });
+    expect(result.resolved).toEqual([]);
+    expect(result.unresolved).toEqual([expect.objectContaining({
+      order: expect.objectContaining({ id: order.id }),
+      reason: 'lookup_failed:ORDER_QUERY_REFUSED; listed_open_on_gate',
+    })]);
+    expect(isTerminalOrderState(runtime.getOrder(order.id).state)).toBe(false);
+  });
+
+  it('never settles an order from the open-order list while Gate still describes it as open', async () => {
+    const { runtime } = await createHarness({
+      queryOrder: (orderId) => remoteOrder({ order_id: orderId, state: 'OPEN' }),
+      duringCancel: () => { throw new GateApiError(400, 'ORDER_CANCEL_REFUSED'); },
+      openOrders: () => [],
+    });
+    const order = await runtime.createOrder(marketOrderInput);
+    const result = await runtime.quiesceOpenOrders({ timeoutMs: 50 });
+    expect(result.resolved).toEqual([]);
+    expect(result.unresolved[0]?.reason).toBe('cancel_failed:ORDER_CANCEL_REFUSED');
+    expect(runtime.getOrder(order.id).state).toBe('OPEN');
+  });
+
+  it('settles a definitively refused cancel only when Gate no longer lists the order open', async () => {
+    const { runtime } = await createHarness({
+      queryOrder: () => { throw new GateApiError(0, 'NETWORK_ERROR'); },
+      duringCancel: () => { throw new GateApiError(400, 'ORDER_ALREADY_CLOSED'); },
+      openOrders: () => [],
+    });
+    const order = await runtime.createOrder(marketOrderInput);
+    const result = await runtime.quiesceOpenOrders({ timeoutMs: 50 });
+    expect(result.unresolved).toEqual([]);
+    expect(runtime.getOrder(order.id).state).toBe('REMOTE_NOT_FOUND');
+  });
+
+  it('reports the remote state when Gate accepts a cancel but never confirms it', async () => {
+    const { runtime } = await createHarness({
+      queryOrder: (orderId) => remoteOrder({ order_id: orderId, state: 'OPEN' }),
+    });
+    await runtime.createOrder(marketOrderInput);
+    const result = await runtime.quiesceOpenOrders({ timeoutMs: 60 });
+    expect(result.unresolved.map(({ reason }) => reason)).toEqual(['cancel_not_confirmed:OPEN']);
+  });
+
+  it('leaves transient failures unresolved instead of guessing from the open-order list', async () => {
+    const { runtime } = await createHarness({
+      queryOrder: () => { throw new GateApiError(0, 'NETWORK_ERROR'); },
+      duringCancel: () => { throw new GateApiError(0, 'NETWORK_ERROR'); },
+      openOrders: () => [],
+    });
+    const order = await runtime.createOrder(marketOrderInput);
+    const result = await runtime.quiesceOpenOrders({ timeoutMs: 50 });
+    expect(result.unresolved[0]?.reason).toBe('lookup_failed:NETWORK_ERROR; cancel_failed:NETWORK_ERROR; cancel_not_confirmed:NEW');
+    expect(runtime.getOrder(order.id).state).toBe('NEW');
+  });
+
+  it('still cancels when only the first lookup fails transiently', async () => {
+    let cancelled = false;
+    let lookups = 0;
+    const { runtime } = await createHarness({
+      queryOrder: (orderId) => {
+        lookups += 1;
+        if (lookups === 1) throw new GateApiError(0, 'NETWORK_ERROR');
+        return remoteOrder({ order_id: orderId, state: cancelled ? 'CANCELLED' : 'OPEN' });
+      },
+      duringCancel: () => { cancelled = true; },
+    });
+    const order = await runtime.createOrder(marketOrderInput);
+    const result = await runtime.quiesceOpenOrders({ timeoutMs: 50 });
+    expect(result.unresolved).toEqual([]);
+    expect(runtime.getOrder(order.id).state).toBe('CANCELLED');
   });
 });
 

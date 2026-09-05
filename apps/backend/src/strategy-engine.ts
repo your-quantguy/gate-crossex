@@ -15,6 +15,8 @@ import {
   type ExecutionOrder,
   type StrategyRecord,
   type UpdatePremiumTakeProfitInput,
+  unresolvedOrderDetails,
+  type UnresolvedOrderReport,
 } from './trading-runtime.js';
 
 /** Read access to the live market cache; the production implementation is CrossExMarketHub. */
@@ -70,6 +72,8 @@ interface StrategyActor {
   suspended: boolean;
   quiesceTarget: 'PAUSED' | 'STOPPED' | null;
   quiesceReason: string | null;
+  /** Orders the last quiesce attempt could not prove terminal, kept for recovery diagnostics. */
+  unresolvedOrders: UnresolvedOrderReport[];
   createdAt: number;
   lastCloseAt: number;
 }
@@ -309,7 +313,8 @@ export class StrategyEngine {
     const quiesced = await this.runtime.quiesceOpenOrders({ timeoutMs: this.options.orderTimeoutMs });
     if (quiesced.unresolved.length > 0) {
       throw new StrategyEngineError('strategy_recovery_unresolved', 409,
-        quiesced.unresolved.map(({ order }) => order.id).join(','));
+        quiesced.unresolved.map(({ order }) => order.id).join(','),
+        { unresolvedOrders: unresolvedOrderDetails(quiesced.unresolved) });
     }
     for (const actor of this.actors.values()) actor.suspended = true;
     this.actors.clear();
@@ -323,7 +328,10 @@ export class StrategyEngine {
       actor.quiesceReason = 'Recovered pending safety transition after restart';
       await this.maintainQuiesce(actor);
       if (this.actors.has(record.id)) {
-        throw new StrategyEngineError('strategy_recovery_unresolved', 409, record.id);
+        throw new StrategyEngineError('strategy_recovery_unresolved', 409, record.id, {
+          strategyId: record.id,
+          unresolvedOrders: unresolvedOrderDetails(actor.unresolvedOrders),
+        });
       }
     }
   }
@@ -677,7 +685,7 @@ export class StrategyEngine {
       id: record.id, config: record.config, kind: record.kind, status: record.status,
       busy: false, queue: Promise.resolve(), quotes: new Map(), repairAttempts: 0,
       lastRepairAt: 0, failureCount: 0, cooldownUntil: 0, lastQuoteAt: 0,
-      suspended, quiesceTarget: null, quiesceReason: null, createdAt: Date.parse(record.createdAt),
+      suspended, quiesceTarget: null, quiesceReason: null, unresolvedOrders: [], createdAt: Date.parse(record.createdAt),
       lastCloseAt: Date.parse(record.updatedAt),
     };
     this.actors.set(record.id, actor);
@@ -1306,6 +1314,7 @@ export class StrategyEngine {
       strategyId: actor.id,
       timeoutMs: this.options.orderTimeoutMs,
     });
+    actor.unresolvedOrders = result.unresolved;
     if (result.unresolved.length > 0) {
       actor.status = target === 'PAUSED' ? 'PAUSE_PENDING_REMOTE' : 'STOP_PENDING_REMOTE';
       const now = new Date().toISOString();
@@ -1314,7 +1323,7 @@ export class StrategyEngine {
       this.runtime.addStrategyLog(actor.id, 'error',
         target === 'PAUSED' ? 'Strategy pause pending' : 'Strategy stop pending',
         'Remote cancellation not confirmed', '—',
-        `${actor.quiesceReason ?? 'Safety quiesce'} · unresolved ${result.unresolved.map(({ order }) => order.id).join(', ')}`);
+        `${actor.quiesceReason ?? 'Safety quiesce'} · unresolved ${result.unresolved.map(({ order, reason }) => `${order.id} (${reason})`).join(', ')}`);
       this.runtime.emitStrategyUpdate(this.runtime.getStrategy(actor.id));
       return false;
     }

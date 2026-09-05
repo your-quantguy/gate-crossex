@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { Decimal } from 'decimal.js';
 import { z } from 'zod';
-import type { LiveBalance, PortfolioFill, PortfolioFuturesPosition } from '@gate-crossex/shared-types';
+import type { LiveBalance, PortfolioFill, PortfolioFuturesPosition, UnresolvedOrder } from '@gate-crossex/shared-types';
 import { DEFAULT_CREDENTIAL_PROFILE, type CredentialVault } from './credential-vault.js';
 import { CrossExOrderRequestSchema, GateApiError, type GateCrossExAccount, type GateCrossExRiskLimit, type ReadOnlyCrossExGateway, type TradingCrossExGateway } from './crossex-client.js';
 import type { PrivateCrossExEvent } from './private-stream.js';
@@ -895,61 +895,110 @@ export class TradingRuntime {
   /**
    * Cancel every locally tracked open order in scope and prove a terminal remote state. This is
    * used before resuming persisted strategies, when locking trading, and before credential
-   * mutation. A caller must treat any returned id as unresolved remote exposure.
+   * mutation. A caller must treat any returned order as unresolved remote exposure; each carries a
+   * reason (see UnresolvedOrderReport) so the caller can say what blocked it.
    */
   async quiesceOpenOrders(options: { strategyId?: string; timeoutMs?: number } = {}): Promise<{
     resolved: ExecutionOrder[];
-    unresolved: Array<{ order: ExecutionOrder; reason: string }>;
+    unresolved: UnresolvedOrderReport[];
   }> {
     const timeoutMs = options.timeoutMs ?? 20_000;
-    const attempts = this.listOpenOrders(options.strategyId).map(async (initial) => {
-      try {
-        let current = initial;
-        try {
-          current = await this.refreshOrderFromRemote(initial.id) ?? current;
-        } catch (error) {
-          if (error instanceof GateApiError && error.statusCode === 404) {
-            current = this.markOrderRemoteMissing(initial.id);
-          } else {
-            throw error;
-          }
-        }
-        if (isTerminalOrderState(current.state)) return { resolved: current } as const;
-        if (current.state !== 'PENDING_CANCEL') await this.cancelOrder(current.id);
-        const refreshedAfterCancel = await this.refreshOrderFromRemote(current.id);
-        const settled = refreshedAfterCancel && isTerminalOrderState(refreshedAfterCancel.state)
-          ? refreshedAfterCancel
-          : await this.awaitTerminalOrder(current.id, timeoutMs);
-        if (isTerminalOrderState(settled.state)) return { resolved: settled } as const;
-        return { unresolved: { order: settled, reason: 'cancel_not_confirmed' } } as const;
-      } catch (error) {
-        try {
-          const refreshed = await this.refreshOrderFromRemote(initial.id);
-          if (refreshed && isTerminalOrderState(refreshed.state)) return { resolved: refreshed } as const;
-        } catch (refreshError) {
-          if (refreshError instanceof GateApiError && refreshError.statusCode === 404) {
-            return { resolved: this.markOrderRemoteMissing(initial.id) } as const;
-          }
-        }
-        return {
-          unresolved: {
-            order: this.getOrder(initial.id),
-            reason: error instanceof Error ? error.message.slice(0, 160) : 'cancel_failed',
-          },
-        } as const;
-      }
-    });
-    const results = await Promise.all(attempts);
+    // Gate's open-order list is fetched at most once per quiesce, and only when an order needs it.
+    let remoteOpenIds: Promise<Set<string> | null> | null = null;
+    const openIds = () => (remoteOpenIds ??= this.remoteOpenOrderIds());
+    const results = await Promise.all(this.listOpenOrders(options.strategyId)
+      .map((initial) => this.quiesceOrder(initial, timeoutMs, openIds)));
     const resolved: ExecutionOrder[] = [];
-    const unresolved: Array<{ order: ExecutionOrder; reason: string }> = [];
+    const unresolved: UnresolvedOrderReport[] = [];
     for (const result of results) {
-      if (result.resolved !== undefined) resolved.push(result.resolved);
-      else if (result.unresolved !== undefined) unresolved.push(result.unresolved);
+      if ('resolved' in result) resolved.push(result.resolved);
+      else unresolved.push(result.unresolved);
     }
-    return {
-      resolved,
-      unresolved,
+    return { resolved, unresolved };
+  }
+
+  /**
+   * Settle one open order: refresh, cancel if still open, confirm terminal. When Gate refuses to
+   * describe or cancel the order itself (a definitive 4xx or an unparseable body) its open-order
+   * list becomes the fallback authority: an id absent from that list is not open exposure and the
+   * row is closed as REMOTE_NOT_FOUND. Transient failures never count as evidence either way, and a
+   * successful lookup that still reports the order open always wins over the list.
+   */
+  private async quiesceOrder(
+    initial: ExecutionOrder,
+    timeoutMs: number,
+    remoteOpenIds: () => Promise<Set<string> | null>,
+  ): Promise<{ resolved: ExecutionOrder } | { unresolved: UnresolvedOrderReport }> {
+    const problems: string[] = [];
+    const note = (problem: string) => { if (!problems.includes(problem)) problems.push(problem); };
+    let remoteState: string | null = null;
+    let lookupRefused = false;
+    const lookup = async (id: string): Promise<ExecutionOrder | null> => {
+      try {
+        const refreshed = await this.refreshOrderFromRemote(id);
+        if (refreshed) remoteState = refreshed.state;
+        return refreshed;
+      } catch (error) {
+        if (isRemoteOrderMissing(error)) return this.markOrderRemoteMissing(id);
+        if (isDefinitiveGateRefusal(error)) lookupRefused = true;
+        note(`lookup_failed:${describeQuiesceFailure(error)}`);
+        return null;
+      }
     };
+
+    let current = await lookup(initial.id) ?? this.getOrder(initial.id);
+    if (isTerminalOrderState(current.state)) return { resolved: current };
+
+    let cancelRefused = false;
+    if (current.state !== 'PENDING_CANCEL') {
+      try {
+        await this.cancelOrder(current.id);
+      } catch (error) {
+        // A push may have settled the order between the lookup and the cancel; that is not a failure.
+        if (!(error instanceof TradingRuntimeError && error.code === 'order_not_cancellable')) {
+          if (isDefinitiveGateRefusal(error)) cancelRefused = true;
+          note(`cancel_failed:${describeQuiesceFailure(error)}`);
+        }
+      }
+      current = this.getOrder(current.id);
+      if (isTerminalOrderState(current.state)) return { resolved: current };
+    }
+
+    const confirmed = await lookup(current.id);
+    if (confirmed && isTerminalOrderState(confirmed.state)) return { resolved: confirmed };
+
+    if (!lookupRefused && !cancelRefused) {
+      // Gate can still describe the order, so a push or poll may settle it within the timeout.
+      const settled = await this.awaitTerminalOrder(current.id, timeoutMs);
+      if (isTerminalOrderState(settled.state)) return { resolved: settled };
+      note(`cancel_not_confirmed:${settled.state}`);
+    } else if (remoteState === null) {
+      const openIds = await remoteOpenIds();
+      const listedOpen = openIds === null
+        ? null
+        : (current.remoteOrderId !== null && openIds.has(current.remoteOrderId)) || openIds.has(current.clientOrderId);
+      if (listedOpen === false) return { resolved: this.markOrderRemoteMissing(current.id) };
+      note(listedOpen ? 'listed_open_on_gate' : 'open_orders_unavailable');
+    }
+    return { unresolved: { order: this.getOrder(current.id), reason: problems.join('; ') || 'cancel_not_confirmed' } };
+  }
+
+  /** Remote and client ids of every order Gate currently lists as open, or null when unavailable. */
+  private async remoteOpenOrderIds(): Promise<Set<string> | null> {
+    const credentials = await this.vault.get(DEFAULT_CREDENTIAL_PROFILE);
+    const tradingGateway = this.gateway as Partial<TradingCrossExGateway>;
+    if (!credentials || !tradingGateway.queryOpenOrders) return null;
+    try {
+      const ids = new Set<string>();
+      for (const order of await tradingGateway.queryOpenOrders(credentials)) {
+        ids.add(order.order_id);
+        if (order.text) ids.add(order.text);
+        if (order.client_order_id) ids.add(order.client_order_id);
+      }
+      return ids;
+    } catch {
+      return null;
+    }
   }
 
   clearAuthenticatedAccountState(): void {
@@ -1128,8 +1177,50 @@ export class TradingRuntimeError extends Error {
     readonly code: string,
     readonly statusCode: number,
     readonly label?: string,
+    /** Structured context for the HTTP payload, e.g. the orders that blocked a mode change. */
+    readonly details?: Record<string, unknown>,
   ) {
     super(code);
     this.name = 'TradingRuntimeError';
   }
+}
+
+export interface UnresolvedOrderReport {
+  order: ExecutionOrder;
+  /**
+   * Machine-readable, `;`-separated tokens: `lookup_failed:<label>`, `cancel_failed:<label>`,
+   * `cancel_not_confirmed:<remote state>`, `listed_open_on_gate`, `open_orders_unavailable`.
+   */
+  reason: string;
+}
+
+/** Shape an unresolved quiesce result for API responses and audit payloads. */
+export function unresolvedOrderDetails(unresolved: UnresolvedOrderReport[]): UnresolvedOrder[] {
+  return unresolved.map(({ order, reason }) => ({
+    id: order.id, remoteOrderId: order.remoteOrderId, clientOrderId: order.clientOrderId, symbol: order.symbol,
+    venue: order.venue, side: order.side, quantity: order.quantity, executedQuantity: order.executedQuantity,
+    price: order.price, state: order.state, strategyId: order.strategyId, reason,
+  }));
+}
+
+function isRemoteOrderMissing(error: unknown): boolean {
+  return error instanceof GateApiError && error.statusCode === 404;
+}
+
+/**
+ * Gate answered and will not act on this order id: a non-retryable 4xx, a 2xx whose body failed
+ * validation, or an id the client refuses to send. Network failures, 5xx, and rate limits are
+ * transient and prove nothing about the order.
+ */
+function isDefinitiveGateRefusal(error: unknown): boolean {
+  if (!(error instanceof GateApiError)) return false;
+  if (error.label === 'INVALID_ORDER_ID') return true;
+  if (error.statusCode === 429) return false;
+  return (error.statusCode >= 200 && error.statusCode < 300) || (error.statusCode >= 400 && error.statusCode < 500);
+}
+
+function describeQuiesceFailure(error: unknown): string {
+  if (error instanceof GateApiError) return error.label;
+  if (error instanceof TradingRuntimeError) return error.code;
+  return error instanceof Error ? error.message.slice(0, 80) : 'unknown_error';
 }

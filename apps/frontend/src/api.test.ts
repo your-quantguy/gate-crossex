@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { api, ApiError, connectTerminalStream } from './api.js';
+import { api, ApiError, connectTerminalStream, unresolvedOrdersFromError } from './api.js';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -106,6 +106,23 @@ describe('local API request coordination', () => {
     const init = fetchMock.mock.calls[0]?.[1];
     expect(init?.method).toBe('POST');
     expect(new Headers(init?.headers).get('x-gct-trading-intent')).toBe('resume-strategy');
+  });
+
+  it('exposes the orders that blocked a live activation as structured details', async () => {
+    const blocking = {
+      id: 'order-1', remoteOrderId: 'live-1', clientOrderId: 'gct-1', symbol: 'BINANCE_FUTURE_BTC_USDT', venue: 'BINANCE',
+      side: 'BUY', quantity: '0.1', executedQuantity: '0', price: '100', state: 'OPEN', strategyId: null, reason: 'cancel_not_confirmed:OPEN',
+    };
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      error: 'strategy_recovery_unresolved', label: 'order-1', unresolvedOrders: [blocking],
+    }), { status: 409 })));
+
+    const failure: unknown = await api.setTradingMode('live', true).catch((error: unknown) => error);
+    expect(failure).toEqual(expect.objectContaining({ status: 409, code: 'strategy_recovery_unresolved', label: 'order-1' }));
+    expect(unresolvedOrdersFromError(failure)).toEqual([blocking]);
+    // Malformed or absent details degrade to "nothing to show" rather than throwing.
+    expect(unresolvedOrdersFromError(new ApiError(409, 'strategy_recovery_unresolved', undefined, 'order-1', { unresolvedOrders: [{ id: 'broken' }] }))).toEqual([]);
+    expect(unresolvedOrdersFromError(new Error('offline'))).toEqual([]);
   });
 
   it('rejects a successful response that violates the shared runtime contract', async () => {

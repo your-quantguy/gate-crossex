@@ -80,6 +80,8 @@ import {
   type TradingSnapshot,
   type UserPreferences,
   type VenueFeeRate,
+  UnresolvedOrderSchema,
+  type UnresolvedOrder,
 } from '@gate-crossex/shared-types';
 
 export type {
@@ -146,9 +148,18 @@ export class ApiError extends Error {
     readonly code: string,
     readonly retryAfterMs?: number,
     readonly label?: string,
+    /** Structured fields the backend attached beside `error`/`label`, e.g. blocking orders. */
+    readonly details?: Record<string, unknown>,
   ) {
     super(`${code.replaceAll('_', ' ')}${label ? ` (${label})` : ''}`);
   }
+}
+
+/** Orders the backend reported as blocking a trading-mode change, or an empty list. */
+export function unresolvedOrdersFromError(error: unknown): UnresolvedOrder[] {
+  if (!(error instanceof ApiError)) return [];
+  const parsed = UnresolvedOrderSchema.array().safeParse(error.details?.unresolvedOrders);
+  return parsed.success ? parsed.data : [];
 }
 
 const READ_TIMEOUT_MS = 15_000;
@@ -169,12 +180,13 @@ async function waitForBackendCooldown(): Promise<void> {
   if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
 }
 
-function errorPayload(value: unknown): { error?: string; label?: string } {
+function errorPayload(value: unknown): { error?: string; label?: string; details?: Record<string, unknown> } {
   if (!value || typeof value !== 'object') return {};
-  const record = value as Record<string, unknown>;
+  const { error, label, ...details } = value as Record<string, unknown>;
   return {
-    ...(typeof record.error === 'string' ? { error: record.error } : {}),
-    ...(typeof record.label === 'string' ? { label: record.label } : {}),
+    ...(typeof error === 'string' ? { error } : {}),
+    ...(typeof label === 'string' ? { label } : {}),
+    ...(Object.keys(details).length > 0 ? { details } : {}),
   };
 }
 
@@ -226,7 +238,7 @@ async function requestOnce<T>(
     throw new ApiError(response.status, failure.error ?? 'rate_limit_exceeded', cooldown);
   }
   if (!response.ok) {
-    throw new ApiError(response.status, failure.error ?? 'request_failed', undefined, failure.label);
+    throw new ApiError(response.status, failure.error ?? 'request_failed', undefined, failure.label, failure.details);
   }
   const parsed = schema.safeParse(rawPayload);
   if (!parsed.success) throw new ApiError(response.status, 'invalid_backend_response');
