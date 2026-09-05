@@ -14,8 +14,10 @@ export function describeUnresolvedReason(reason: string, t: (key: string) => str
       case 'cancel_not_confirmed':
         return detail ? `${t('Gate still reports this order as')} ${detail}` : t('Cancellation not confirmed by Gate');
       case 'lookup_failed':
+        if (detail === 'TRADE_ORDER_NOT_FOUND_ERROR') return t('Gate reports no order with this id');
         return `${t('Order lookup failed')}${detail ? ` (${detail})` : ''}`;
       case 'cancel_failed':
+        if (detail === 'TRADE_ORDER_NOT_FOUND_ERROR') return t('Gate refused the cancel: no order with this id');
         return `${t('Cancel request failed')}${detail ? ` (${detail})` : ''}`;
       case 'listed_open_on_gate':
         return t('Still listed among your open orders on Gate');

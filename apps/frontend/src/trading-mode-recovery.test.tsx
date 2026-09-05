@@ -14,6 +14,9 @@ describe('describeUnresolvedReason', () => {
     expect(describeUnresolvedReason('lookup_failed:INVALID_ORDER_RESPONSE; listed_open_on_gate', identity))
       .toBe('Order lookup failed (INVALID_ORDER_RESPONSE). Still listed among your open orders on Gate');
     expect(describeUnresolvedReason('open_orders_unavailable', identity)).toBe('Could not load your open orders from Gate');
+    expect(describeUnresolvedReason('lookup_failed:TRADE_ORDER_NOT_FOUND_ERROR; listed_open_on_gate', identity))
+      .toBe('Gate reports no order with this id. Still listed among your open orders on Gate');
+    expect(describeUnresolvedReason('cancel_failed:TRADE_ORDER_NOT_FOUND_ERROR', identity)).toBe('Gate refused the cancel: no order with this id');
     expect(describeUnresolvedReason('', identity)).toBe('Cancellation not confirmed by Gate');
     expect(describeUnresolvedReason('something_else', identity)).toBe('something_else');
   });
@@ -37,5 +40,7 @@ describe('UnresolvedOrdersNotice', () => {
     expect(markup).toContain('PARTIALLY_FILLED');
     expect(markup).toContain('Gate still reports this order as PARTIALLY_FILLED');
     expect(markup).toContain('Retry reconciliation');
+    expect(markup).toContain('Retry sends the cancel requests again from this terminal.');
+    expect(markup).not.toContain('cancel it there');
   });
 });
