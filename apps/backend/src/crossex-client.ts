@@ -137,14 +137,18 @@ const GateMarginPositionSchema = z.object({
 });
 export type GateCrossExMarginPosition = z.infer<typeof GateMarginPositionSchema>;
 
+// Descriptive order fields are tolerated when Gate omits or nulls them (finished orders can carry a
+// sparser payload than open ones). Reconciliation relies only on identity, state, and executed
+// figures, and one missing cosmetic field must never leave a local order impossible to settle.
+const lenientOrderText = z.string().nullish().transform((value) => value ?? '');
 const GateOrderSchema = z.object({
   order_id: z.string(), text: z.string().optional(), client_order_id: z.string().optional(), state: z.string(),
-  symbol: z.string(), side: z.string(), type: z.string(), attribute: z.string(), exchange_type: z.string(),
-  business_type: z.string(), qty: z.string(), quote_qty: z.string(), price: z.string(),
-  time_in_force: z.string(), executed_qty: z.string(), executed_amount: z.string(),
-  executed_avg_price: z.string(), fee_coin: z.string(), fee: z.string(), reduce_only: z.string(),
-  leverage: z.string(), reason: z.string(), last_executed_qty: z.string(), last_executed_price: z.string(),
-  last_executed_amount: z.string(), position_side: z.string(), create_time: z.string(), update_time: z.string(),
+  symbol: z.string(), side: z.string(), type: z.string(), attribute: lenientOrderText, exchange_type: lenientOrderText,
+  business_type: lenientOrderText, qty: z.string(), quote_qty: lenientOrderText, price: lenientOrderText,
+  time_in_force: lenientOrderText, executed_qty: z.string(), executed_amount: lenientOrderText,
+  executed_avg_price: z.string(), fee_coin: lenientOrderText, fee: lenientOrderText, reduce_only: lenientOrderText,
+  leverage: lenientOrderText, reason: lenientOrderText, last_executed_qty: lenientOrderText, last_executed_price: lenientOrderText,
+  last_executed_amount: lenientOrderText, position_side: lenientOrderText, create_time: lenientOrderText, update_time: z.string(),
 }).refine((order) => order.text !== undefined || order.client_order_id !== undefined);
 export type GateCrossExOrder = z.infer<typeof GateOrderSchema>;
 
@@ -255,6 +259,11 @@ export interface TradingCrossExGateway extends ReadOnlyCrossExGateway {
   createOrder(credentials: GateCredentials, order: CrossExOrderRequest): Promise<GateOrderActionResponse>;
   cancelOrder(credentials: GateCredentials, orderId: string): Promise<GateOrderActionResponse>;
   queryOrder(credentials: GateCredentials, orderId: string): Promise<GateCrossExOrder>;
+  /**
+   * Account-wide open-order list. Optional so scripted gateways may omit it; when present, order
+   * quiescence uses it to settle local rows that the order-details endpoint refuses to describe.
+   */
+  queryOpenOrders?(credentials: GateCredentials): Promise<GateCrossExOrder[]>;
   queryLeverages(credentials: GateCredentials, symbols: string[]): Promise<Record<string, string>>;
   setLeverage(credentials: GateCredentials, symbol: string, leverage: string): Promise<GateLeverageResponse>;
   queryFeeRates(credentials: GateCredentials): Promise<GateFeeRate[]>;
@@ -459,6 +468,10 @@ export class GateCrossExClient implements TradingCrossExGateway, PortfolioOperat
   async queryOrder(credentials: GateCredentials, orderId: string): Promise<GateCrossExOrder> {
     if (!/^[a-zA-Z0-9_-]{1,128}$/.test(orderId)) throw new GateApiError(0, 'INVALID_ORDER_ID');
     return this.signedRequest('GET', `${ORDERS_ENDPOINT}/${encodeURIComponent(orderId)}`, '', '', credentials, GateOrderSchema, 'INVALID_ORDER_RESPONSE', false, 'high');
+  }
+
+  async queryOpenOrders(credentials: GateCredentials): Promise<GateCrossExOrder[]> {
+    return this.signedRequest('GET', OPEN_ORDERS_ENDPOINT, '', '', credentials, z.array(GateOrderSchema), 'INVALID_OPEN_ORDERS_RESPONSE', false, 'high');
   }
 
   async queryLeverages(credentials: GateCredentials, symbols: string[]): Promise<Record<string, string>> {

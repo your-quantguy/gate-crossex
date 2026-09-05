@@ -86,6 +86,8 @@ class FakeCrossExGateway implements TradingCrossExGateway {
   transferCoinQueryCount = 0;
   failSymbols = false;
   failPortfolio = false;
+  /** When set, cancel requests are accepted but the remote order keeps reporting OPEN. */
+  holdCancellations = false;
   private readonly remoteOrders = new Map<string, { request: CrossExOrderRequest; state: string }>();
   private portfolioBlock: Promise<void> | null = null;
   private positionsBlock: Promise<void> | null = null;
@@ -179,7 +181,7 @@ class FakeCrossExGateway implements TradingCrossExGateway {
     this.receivedCredentials.push({ ...credentials });
     this.cancelledOrders.push(orderId);
     const existing = this.remoteOrders.get(orderId);
-    if (existing) existing.state = 'CANCELLED';
+    if (existing && !this.holdCancellations) existing.state = 'CANCELLED';
     return { order_id: orderId, text: '' };
   }
 
@@ -377,6 +379,7 @@ async function createTestApp(options: {
   directory?: string;
   borosStrategyFetcher?: () => Promise<unknown>;
   borosMarketFeeFetcher?: (marketIds: number[]) => Promise<unknown>;
+  strategyEngineOptions?: { orderTimeoutMs?: number };
 } = {}): Promise<TestContext> {
   const directory = options.directory ?? mkdtempSync(join(tmpdir(), 'gate-crossex-app-'));
   const config = loadConfig({
@@ -403,6 +406,7 @@ async function createTestApp(options: {
     startMarketStream: options.startMarketStream,
     borosStrategyFetcher: options.borosStrategyFetcher,
     borosMarketFeeFetcher: options.borosMarketFeeFetcher,
+    strategyEngineOptions: options.strategyEngineOptions,
     logger: false,
   });
   const context = { app, database, vault, gateway, publicMarketGateway, tradingSession, directory };
@@ -665,6 +669,55 @@ describe('local backend', () => {
     expect(gateway.cancelledOrders).toEqual(['live-1']);
     const afterLock = await app.inject({ method: 'GET', url: '/api/trading/snapshot', headers: host });
     expect(afterLock.json().orders).toEqual([expect.objectContaining({ remoteOrderId: 'live-1', state: 'CANCELLED' })]);
+  });
+
+  it('explains which open orders block live activation and clears the block once Gate confirms them', async () => {
+    const { app, vault, gateway, database } = await createTestApp({ strategyEngineOptions: { orderTimeoutMs: 100 } });
+    await vault.set(DEFAULT_CREDENTIAL_PROFILE, { apiKey: 'test-key', apiSecret: 'test-secret' });
+    const host = { host: '127.0.0.1:17840' };
+    const intent = { ...host, 'x-gct-trading-intent': 'set-trading-mode' };
+    const armed = await app.inject({ method: 'POST', url: '/api/trading-mode', headers: intent, payload: { mode: 'live', acceptDisclaimer: true } });
+    expect(armed.statusCode).toBe(200);
+    const placed = await app.inject({ method: 'POST', url: '/api/trading/orders', headers: { ...host, 'x-gct-trading-intent': 'place-order' }, payload: {
+      symbol: 'BINANCE_FUTURE_BTC_USDT', side: 'BUY', type: 'LIMIT', timeInForce: 'GTC', quantity: '0.001', price: '1', reduceOnly: false,
+    } });
+    expect(placed.statusCode).toBe(200);
+    const orderId = placed.json().id as string;
+
+    // Gate accepts the cancel request but keeps reporting the order open (a venue-side hang).
+    gateway.holdCancellations = true;
+    const locked = await app.inject({ method: 'POST', url: '/api/trading-mode', headers: intent, payload: { mode: 'readonly' } });
+    expect(locked.statusCode).toBe(202);
+    expect(locked.json()).toMatchObject({
+      mode: 'readonly',
+      warning: 'readonly_quiesce_incomplete',
+      unresolvedOrderIds: [orderId],
+      unresolvedOrders: [expect.objectContaining({ id: orderId, reason: 'cancel_not_confirmed:OPEN' })],
+    });
+
+    const blocked = await app.inject({ method: 'POST', url: '/api/trading-mode', headers: intent, payload: { mode: 'live', acceptDisclaimer: true } });
+    expect(blocked.statusCode).toBe(409);
+    expect(blocked.json()).toEqual({
+      error: 'strategy_recovery_unresolved',
+      label: orderId,
+      unresolvedOrders: [{
+        id: orderId, remoteOrderId: 'live-1', clientOrderId: expect.stringMatching(/^gct-/), symbol: 'BINANCE_FUTURE_BTC_USDT',
+        venue: 'BINANCE', side: 'BUY', quantity: '0.001', executedQuantity: '0', price: '1', state: 'OPEN', strategyId: null,
+        reason: 'cancel_not_confirmed:OPEN',
+      }],
+    });
+    expect((await app.inject({ method: 'GET', url: '/api/trading-mode', headers: host })).json()).toEqual({ mode: 'readonly' });
+    const audit = database.prepare("SELECT payload_json FROM audit_events WHERE type = 'live_mode_activation_blocked'").all() as Array<{ payload_json: string }>;
+    expect(audit).toHaveLength(1);
+    expect(JSON.parse(audit[0]?.payload_json ?? '{}')).toMatchObject({ unresolvedOrders: [expect.objectContaining({ id: orderId, reason: 'cancel_not_confirmed:OPEN' })] });
+
+    // Once Gate honours the cancellation the same request arms live mode.
+    gateway.holdCancellations = false;
+    const rearmed = await app.inject({ method: 'POST', url: '/api/trading-mode', headers: intent, payload: { mode: 'live', acceptDisclaimer: true } });
+    expect(rearmed.statusCode).toBe(200);
+    expect(rearmed.json()).toEqual({ mode: 'live' });
+    const snapshot = await app.inject({ method: 'GET', url: '/api/trading/snapshot', headers: host });
+    expect(snapshot.json().orders).toEqual([expect.objectContaining({ id: orderId, state: 'CANCELLED' })]);
   });
 
   it('records every trading-mode change in the audit log', async () => {

@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { contiguousCandleTail } from '@gate-crossex/shared-types';
+import { contiguousCandleTail, type UnresolvedOrder } from '@gate-crossex/shared-types';
 import {
   api,
   ApiError,
@@ -23,12 +23,14 @@ import {
   type TradingMode,
   type TradingSnapshot,
   type VenueFeeRate,
+  unresolvedOrdersFromError,
 } from './api.js';
 import { parseStoredFavorites } from './local-preferences.js';
 import { scopeStrategiesToAccount, strategyBelongsToAccount } from './strategy-accounts.js';
 import { DEFAULT_FRONTEND_ROUTE, frontendPath, frontendRoute, type FrontendRoute, type StrategyRouteKind } from './frontend-routes.js';
 import { LanguageContext, translate, useLanguage, type Language, type Theme } from './i18n.js';
 import type { FundingMetric, PairedPositionPrefill } from './route-shared.js';
+import { UnresolvedOrdersNotice } from './trading-mode-recovery.js';
 import brandMark from './assets/brand-mark.svg';
 import borosMark from './assets/boros-mark.svg';
 
@@ -372,6 +374,7 @@ function TradingModeGate({ mode, onApplied, credentialEntryPath, onCredentialSta
   const [agreed, setAgreed] = useState(false);
   const [submitting, setSubmitting] = useState<'readonly' | 'live' | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [unresolvedOrders, setUnresolvedOrders] = useState<UnresolvedOrder[]>([]);
   const [needsCredentials, setNeedsCredentials] = useState(false);
   const [checkingCredentials, setCheckingCredentials] = useState(false);
   const [credentialError, setCredentialError] = useState<string | null>(null);
@@ -390,13 +393,18 @@ function TradingModeGate({ mode, onApplied, credentialEntryPath, onCredentialSta
     try {
       const response = await api.setTradingMode(next, agreed);
       setNeedsCredentials(false);
+      setUnresolvedOrders([]);
       onApplied(response.mode);
       onClose?.();
     } catch (cause) {
+      // Orders that could not be proven cancelled get their own panel with per-order reasons; a
+      // bare "mode change failed" line would leave the user guessing what to fix.
+      const blocking = unresolvedOrdersFromError(cause);
+      setUnresolvedOrders(blocking);
       if (cause instanceof ApiError && cause.code === 'credential_not_configured') {
         setNeedsCredentials(true);
         setCredentialError(null);
-      } else {
+      } else if (blocking.length === 0) {
         setError(cause instanceof ApiError ? cause.message : t('Backend unavailable'));
       }
     } finally {
@@ -476,6 +484,7 @@ function TradingModeGate({ mode, onApplied, credentialEntryPath, onCredentialSta
         {credentialError && <p className="credential-setup-error" role="alert">{credentialError}</p>}
         <small>{t('Your API key and secret stay on the local backend and are never stored by this interface.')}</small>
       </section>}
+      {unresolvedOrders.length > 0 && <UnresolvedOrdersNotice orders={unresolvedOrders} retrying={submitting === 'live'} onRetry={() => void choose('live')} />}
       {error && <p className="disclaimer-error" role="alert">{t('Mode change failed')}: {error}</p>}
       <p className="disclaimer-note">{t('Your choice applies to this backend session only; restarting the backend locks trading again.')}</p>
     </section>

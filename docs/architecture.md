@@ -48,7 +48,7 @@ See [integration boundaries](integration.md) for the external endpoint and chann
 - Authenticated exchange access is a fixed allowlist, not a generic request proxy.
 - Ambiguous remote results remain unresolved until reconciliation proves terminal state.
 - Strategies act only on fresh validated quotes, track acknowledged fills, repair leg imbalance, and pause when recovery fails.
-- Locking trading, changing credentials, stopping a strategy, or shutting down quiesces locally tracked open orders.
+- Locking trading, changing credentials, stopping a strategy, or shutting down quiesces locally tracked open orders. If Gate refuses to describe an order, its open-order list is the fallback authority: an id absent from that list is closed locally, while anything still unconfirmed blocks live activation and is reported with a per-order reason.
 
 ## Distribution
 

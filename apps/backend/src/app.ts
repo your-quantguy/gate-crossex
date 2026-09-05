@@ -22,6 +22,7 @@ import {
   crossExTransferRouteError,
   UserPreferencesSchema,
   type UserPreferencesResponse,
+  type UnresolvedOrder,
 } from '@gate-crossex/shared-types';
 import type {
   BorosStrategiesResponse,
@@ -69,9 +70,9 @@ import { FundingHistoryService } from './funding-history.js';
 import { FundingOverviewService } from './funding-overview.js';
 import { canonicalMarketAsset } from './market-asset-aliases.js';
 import { CrossExMarketHub, CANDLE_INTERVALS, type MarketDefinition, type MarketHubMessage } from './market-hub.js';
-import { StrategyEngine, StrategyEngineError } from './strategy-engine.js';
+import { StrategyEngine, StrategyEngineError, type StrategyEngineOptions } from './strategy-engine.js';
 import { TradingSession } from './trading-session.js';
-import { TradingRuntime, TradingRuntimeError } from './trading-runtime.js';
+import { TradingRuntime, TradingRuntimeError, unresolvedOrderDetails } from './trading-runtime.js';
 import { CrossExPrivateStream } from './private-stream.js';
 import { LivePortfolioStore, type LivePortfolioSnapshot } from './live-portfolio.js';
 import { readDatabaseStatus } from './database.js';
@@ -228,6 +229,8 @@ export interface BuildAppOptions {
   borosStrategyFetcher?: () => Promise<unknown>;
   /** Test seam for the public Boros market fee configuration endpoint. */
   borosMarketFeeFetcher?: (marketIds: number[]) => Promise<unknown>;
+  /** Engine timing overrides; tests shorten the remote-confirmation timeout. */
+  strategyEngineOptions?: StrategyEngineOptions;
 }
 
 async function fetchBorosStrategyPayload(): Promise<unknown> {
@@ -485,10 +488,14 @@ function safeCredentialError(error: unknown, language: SecureCredentialLanguage)
     return credentialPageMessage(language, 'The selected credential store is unavailable.', '所选凭证存储方式不可用。');
   }
   if (error instanceof StrategyEngineError && error.code === 'credential_change_blocked_by_open_orders') {
+    // Name the orders so the user can cancel them on Gate instead of guessing which rows are stuck.
+    const details = error.details?.unresolvedOrders;
+    const blocking = Array.isArray(details) ? details as UnresolvedOrder[] : [];
+    const summary = blocking.map((order) => `${order.symbol} ${order.side} ${order.quantity} · ${order.state} · ${order.reason}`).join('; ');
     return credentialPageMessage(
       language,
-      'The credential change was blocked because one or more live orders could not be confirmed canceled. The old credential remains configured and trading remains locked.',
-      '由于一个或多个实盘订单无法确认已取消，API 密钥更改被阻止。旧 API 密钥仍保持配置，交易继续锁定。',
+      `The credential change was blocked because one or more live orders could not be confirmed canceled. The old credential remains configured and trading remains locked.${summary ? ` Unconfirmed orders: ${summary}.` : ''}`,
+      `由于一个或多个实盘订单无法确认已取消，API 密钥更改被阻止。旧 API 密钥仍保持配置，交易继续锁定。${summary ? `未确认的订单：${summary}。` : ''}`,
     );
   }
   if (error instanceof GateApiError) {
@@ -792,7 +799,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     // Unit/injected hubs may deliberately supply static market objects without starting a socket.
     // Production passes startMarketStream=true, where stream health must gate every strategy.
     ...(options.startMarketStream ? { connectionState: () => marketHub.connectionState() } : {}),
-  });
+  }, options.strategyEngineOptions);
 
   const quiesceForCredentialMutation = async (): Promise<void> => {
     const previous = tradingSession.current;
@@ -814,6 +821,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
         'credential_change_blocked_by_open_orders',
         409,
         unresolved.map(({ order }) => order.id).join(','),
+        { unresolvedOrders: unresolvedOrderDetails(unresolved) },
       );
     }
   };
@@ -1346,7 +1354,20 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
           await strategyEngine.prepareForLiveActivation();
         } catch (error) {
           if (error instanceof StrategyEngineError || error instanceof TradingRuntimeError) {
-            return reply.code(error.statusCode).send({ error: error.code, ...(error.label ? { label: error.label } : {}) });
+            if (error.code === 'strategy_recovery_unresolved') {
+              // Surface the blocking orders in the log and audit trail: without them a user only
+              // sees a list of ids and has no way to tell a stale row from live exposure.
+              request.log.warn({ ...error.details }, 'live activation blocked by unreconciled open orders');
+              addAuditEvent(database, 'live_mode_activation_blocked', {
+                profile: activeCredentialProfileId ?? DEFAULT_CREDENTIAL_PROFILE,
+                ...error.details,
+              });
+            }
+            return reply.code(error.statusCode).send({
+              error: error.code,
+              ...(error.label ? { label: error.label } : {}),
+              ...error.details,
+            });
           }
           const reason = error instanceof GateApiError ? error.label : 'LOCAL_CREDENTIAL_ERROR';
           request.log.warn({ reason }, 'live-mode credential verification failed');
@@ -1356,10 +1377,9 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
 
       // Lock first so no new order can pass createOrder while cancellation/quiescence is running.
       const mode = tradingSession.set(parsed.data.mode);
-      let unresolvedOrderIds: string[] = [];
+      let unresolvedOrders: UnresolvedOrder[] = [];
       if (mode === 'readonly') {
-        const unresolved = await strategyEngine.suspendForTradingLock();
-        unresolvedOrderIds = unresolved.map(({ order }) => order.id);
+        unresolvedOrders = unresolvedOrderDetails(await strategyEngine.suspendForTradingLock());
       } else {
         strategyEngine.activatePersistedStrategies(activeCredentialProfileId);
       }
@@ -1368,15 +1388,17 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
           from: previous,
           to: mode,
           disclaimerAccepted: parsed.data.acceptDisclaimer,
-          unresolvedOrderCount: unresolvedOrderIds.length,
+          unresolvedOrderCount: unresolvedOrders.length,
         });
-        request.log.info({ from: previous, to: mode, unresolvedOrderCount: unresolvedOrderIds.length }, 'trading mode changed');
+        request.log.info({ from: previous, to: mode, unresolvedOrderCount: unresolvedOrders.length }, 'trading mode changed');
       }
-      if (unresolvedOrderIds.length > 0) {
+      if (unresolvedOrders.length > 0) {
+        request.log.warn({ unresolvedOrders }, 'read-only lock left open orders unconfirmed');
         return reply.code(202).send({
           mode,
           warning: 'readonly_quiesce_incomplete',
-          unresolvedOrderIds,
+          unresolvedOrderIds: unresolvedOrders.map((order) => order.id),
+          unresolvedOrders,
         });
       }
       return { mode };

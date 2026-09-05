@@ -1757,6 +1757,31 @@ describe('strategy engine', () => {
     await resumed.stop();
   });
 
+  it('reports every order that blocks live activation with its symbol, side, and reason', async () => {
+    const { engine, runtime, gateway } = await createHarness();
+    // Gate accepts the cancel requests but keeps reporting both orders open.
+    gateway.holdCancellations = true;
+    const first = await runtime.createOrder({ symbol: 'BINANCE_FUTURE_BTC_USDT', side: 'BUY', type: 'LIMIT', timeInForce: 'GTC', quantity: '0.1', price: '100000' });
+    const second = await runtime.createOrder({ symbol: 'OKX_FUTURE_BTC_USDT', side: 'SELL', type: 'LIMIT', timeInForce: 'GTC', quantity: '0.2', price: '100100' });
+
+    await expect(engine.prepareForLiveActivation()).rejects.toMatchObject({
+      code: 'strategy_recovery_unresolved',
+      statusCode: 409,
+      details: {
+        unresolvedOrders: expect.arrayContaining([
+          expect.objectContaining({ id: first.id, remoteOrderId: 'remote-1', symbol: 'BINANCE_FUTURE_BTC_USDT', side: 'BUY', quantity: '0.1', state: 'OPEN', reason: 'cancel_not_confirmed:OPEN' }),
+          expect.objectContaining({ id: second.id, remoteOrderId: 'remote-2', symbol: 'OKX_FUTURE_BTC_USDT', side: 'SELL', quantity: '0.2', reason: 'cancel_not_confirmed:OPEN' }),
+        ]),
+      },
+    });
+
+    // Once Gate honours the cancellations the very same activation goes through.
+    gateway.holdCancellations = false;
+    await expect(engine.prepareForLiveActivation()).resolves.toBeUndefined();
+    expect(runtime.getOrder(first.id).state).toBe('CANCELLED');
+    expect(runtime.getOrder(second.id).state).toBe('CANCELLED');
+  });
+
   it('prevents persisted strategies from resuming after an account credential change', async () => {
     const { engine, runtime, markets } = await createHarness();
     markets.set('BINANCE_FUTURE_BTC_USDT', '100150', '100151');

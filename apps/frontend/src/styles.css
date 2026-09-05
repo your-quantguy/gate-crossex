@@ -1112,6 +1112,24 @@ html[data-theme='light'] .toast:not(.toast-error) p { color: #476a62; }
 .credential-setup-finish:disabled { opacity: .5; cursor: wait; }
 .credential-setup-step > small { display: block; margin-top: 9px; color: #668079; font-size: var(--text-caption); line-height: 1.45; }
 .credential-setup-error { margin: 9px 0 0; color: #f2a0ae; font-size: var(--text-small); }
+.recovery-step { margin-top: 12px; padding: 14px; border: 1px solid #6a3a2a; border-radius: 8px; background: #221410; }
+.recovery-step .eyebrow { margin: 0 0 5px; color: #f2a06f; font-size: var(--text-caption); }
+.recovery-step h3 { margin: 0; color: #ffe1d1; font-size: 13px; }
+.recovery-step > p { margin: 7px 0 0; color: #c9a596; font-size: var(--text-small); line-height: 1.55; }
+.recovery-orders { margin: 10px 0 0; padding: 0; list-style: none; max-height: 240px; overflow: auto; border: 1px solid #4a2a20; border-radius: 6px; }
+.recovery-orders li { padding: 8px 10px; border-top: 1px solid #3d241c; }
+.recovery-orders li:first-child { border-top: 0; }
+.recovery-order-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; color: #f0d9cd; font-size: var(--text-small); }
+.recovery-order-head strong { font-weight: 800; }
+.recovery-order-head .long-tag, .recovery-order-head .short-tag { padding: 1px 6px; border-radius: 3px; font-size: var(--text-caption); font-weight: 700; }
+.recovery-order-state { margin-left: auto; padding: 1px 6px; border: 1px solid #5a352a; border-radius: 4px; color: #e6b8a5; font-size: var(--text-caption); font-weight: 700; letter-spacing: .03em; }
+.recovery-order-reason { margin: 4px 0 0; color: #d9b8a9; font-size: var(--text-small); line-height: 1.5; }
+.recovery-orders small { display: block; margin-top: 3px; color: #a27f70; font-size: var(--text-caption); word-break: break-all; }
+.recovery-actions { display: flex; gap: 8px; margin-top: 11px; }
+.recovery-retry { min-height: 34px; padding: 7px 12px; border: 1px solid #a05a3c; border-radius: 6px; color: #ffe1d1; background: #4a2418; font-size: var(--text-small); font-weight: 700; cursor: pointer; }
+.recovery-retry:hover:not(:disabled) { border-color: #c9744d; background: #5c2d1e; }
+.recovery-retry:disabled { opacity: .5; cursor: wait; }
+.recovery-step > small { display: block; margin-top: 9px; color: #a27f70; font-size: var(--text-caption); line-height: 1.45; }
 .submit-order.locked, .start-strategy.locked { border: 1px solid #4d4325; color: #d8b45a; background: #191509; }
 .submit-order.locked:hover, .start-strategy.locked:hover { border-color: #6b5c31; background: #201a0c; }
 html[data-theme='light'] .mode-badge.readonly { border-color: #dcc687; color: #8a6a14; background: #fdf6e0; }
@@ -1130,6 +1148,17 @@ html[data-theme='light'] .credential-setup-step > p:not(.eyebrow, .credential-se
 html[data-theme='light'] .credential-setup-finish { border-color: #9acbc0; color: #176353; background: #f7fffd; }
 html[data-theme='light'] .credential-setup-step > small { color: #68827c; }
 html[data-theme='light'] .credential-setup-error { color: #b7384f; }
+html[data-theme='light'] .recovery-step { border-color: #e6c1ae; background: #fff4ee; }
+html[data-theme='light'] .recovery-step .eyebrow { color: #b8562b; }
+html[data-theme='light'] .recovery-step h3 { color: #6b2f16; }
+html[data-theme='light'] .recovery-step > p, html[data-theme='light'] .recovery-step > small, html[data-theme='light'] .recovery-orders small { color: #8a5a45; }
+html[data-theme='light'] .recovery-orders { border-color: #e6c1ae; }
+html[data-theme='light'] .recovery-orders li { border-top-color: #f0d5c8; }
+html[data-theme='light'] .recovery-order-head { color: #4a2a1c; }
+html[data-theme='light'] .recovery-order-state { border-color: #e6c1ae; color: #8a4a2f; }
+html[data-theme='light'] .recovery-order-reason { color: #6b4030; }
+html[data-theme='light'] .recovery-retry { border-color: #d9a288; color: #7a3416; background: #fff8f4; }
+html[data-theme='light'] .recovery-retry:hover:not(:disabled) { border-color: #c98c6c; background: #fdebe1; }
 html[data-theme='light'] .submit-order.locked, html[data-theme='light'] .start-strategy.locked { border-color: #dcc687; color: #8a6a14; background: #fdf6e0; }
 .disclaimer-header-actions { display: flex; align-items: center; gap: 8px; }
 .disclaimer-lang { display: flex; padding: 2px; border: 1px solid #2a3746; border-radius: 6px; background: #0c1219; }

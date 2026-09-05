@@ -2,6 +2,17 @@
 
 All notable changes to Gate CrossEx are documented in this file.
 
+## [0.2.3] - 2026-09-05
+
+### Fixed
+
+- Live-mode activation and credential changes no longer stay blocked by stale local orders: order reconciliation now cross-checks Gate's open-order list when the order endpoint refuses an id, closes rows Gate no longer lists, and tolerates sparse order payloads.
+- Blocked activations now report each unconfirmed order with its symbol, side, state, and reason in the trading-mode dialog, the backend log, and the audit trail, with a retry action instead of a bare list of ids.
+
+### Changed
+
+- Refreshed the transitive `browserslist` and `fast-uri` dependencies to clear the high-severity advisories that gate releases.
+
 ## [0.2.2] - 2026-08-14
 
 ### Added

@@ -753,6 +753,17 @@ export const ExecutionOrderSchema = z.object({
 });
 export type ExecutionOrder = z.infer<typeof ExecutionOrderSchema>;
 
+/**
+ * A locally tracked order whose remote state could not be proven terminal during quiescence.
+ * Trading-mode responses carry these so the UI can show exactly what blocks live activation and
+ * why, instead of a bare list of ids.
+ */
+export const UnresolvedOrderSchema = ExecutionOrderSchema.pick({
+  id: true, remoteOrderId: true, clientOrderId: true, symbol: true, venue: true, side: true,
+  quantity: true, executedQuantity: true, price: true, state: true, strategyId: true,
+}).extend({ reason: z.string() });
+export type UnresolvedOrder = z.infer<typeof UnresolvedOrderSchema>;
+
 export const ExecutionPositionSchema = z.object({
   position_id: z.string(),
   symbol: z.string(),
