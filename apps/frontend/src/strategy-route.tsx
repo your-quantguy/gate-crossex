@@ -66,6 +66,8 @@ import { useLanguage, type Language } from './i18n.js';
 import { numericFutureFeeRate } from './fee-rates.js';
 
 const PremiumHistoryChart = lazy(() => import('./charts.js').then((module) => ({ default: module.PremiumHistoryChart })));
+const OilSpreadHistoryChart = lazy(() => import('./charts.js').then((module) => ({ default: module.OilSpreadHistoryChart })));
+const OilPricesChart = lazy(() => import('./charts.js').then((module) => ({ default: module.OilPricesChart })));
 const PriceDifferenceHistoryChart = lazy(() => import('./charts.js').then((module) => ({ default: module.PriceDifferenceHistoryChart })));
 const FundingHistoryChart = lazy(() => import('./charts.js').then((module) => ({ default: module.FundingHistoryChart })));
 const HISTORICAL_STRATEGIES_PAGE_SIZE = 10;
@@ -82,6 +84,13 @@ const REALIZED_FUNDING_TILES = [
   { days: 7, labelKey: 'Cumulative 7-day', digits: 3 },
   { days: 30, labelKey: 'Cumulative 30-day', digits: 3 },
 ] as const;
+type OilHistoryRange = PairHistoryRange | '7D' | '30D' | '180D';
+const OIL_HISTORY_RANGES: Record<OilHistoryRange, { interval: CandleInterval; durationMs: number }> = {
+  ...PAIR_HISTORY_RANGES,
+  '7D': { interval: '1h', durationMs: 7 * 24 * 60 * 60_000 },
+  '30D': { interval: '4h', durationMs: 30 * 24 * 60 * 60_000 },
+  '180D': { interval: '1d', durationMs: 180 * 24 * 60 * 60_000 },
+};
 
 function useInstrumentCatalog(): CrossExInstrument[] | null {
   const [instruments, setInstruments] = useState<CrossExInstrument[] | null>(null);
@@ -311,7 +320,7 @@ export function RunningStrategiesPanel({ strategies, authenticatedPortfolio, tra
   }
 
   function kindLabel(strategy: StrategyRecord): string {
-    return t(strategy.config.closePlan ? 'Hedge position strategy' : strategy.kind === 'auto' ? 'Price-difference bot' : strategy.kind === 'premium' ? 'SK hynix premium bot' : 'Cross-exchange hedge');
+    return t(strategy.config.closePlan ? 'Hedge position strategy' : strategy.kind === 'auto' ? 'Price-difference bot' : strategy.kind === 'premium' ? strategy.config.premiumMetric === 'ABSOLUTE' ? 'BZ / CL oil spread bot' : 'SK hynix premium bot' : 'Cross-exchange hedge');
   }
 
   return <>
@@ -339,21 +348,21 @@ export function RunningStrategiesPanel({ strategies, authenticatedPortfolio, tra
       return <div className="running-row" key={strategy.id}>
         {showingHistory && <span className="strategy-start-time"><strong>{startedAt.date}</strong><small>{startedAt.time}</small></span>}
         <span><strong>{strategy.id}</strong><small>{kindLabel(strategy)}{strategy.accountLabel ? ` · ${strategy.accountLabel}` : ''}</small></span>
-        <span><strong>{strategyMarketLabel(config)}</strong><small>{t(premium ? 'ADR premium' : 'Perpetual')}</small></span>
+        <span><strong>{strategyMarketLabel(config)}</strong><small>{t(premium ? config.premiumMetric === 'ABSOLUTE' ? 'BZ - CL spread' : 'ADR premium' : 'Perpetual')}</small></span>
         <span>{timedClose ? [...new Set(config.closePlan?.targets.map((target) => symbolParts(target.symbol).venue) ?? [])].join(' ⇄ ') : config.leftVenue === config.rightVenue ? leftVenue?.name ?? config.leftVenue : `${leftVenue?.name ?? config.leftVenue} ⇄ ${rightVenue?.name ?? config.rightVenue}`}</span>
         <span>{timedClose
           ? <><strong>{config.closePlan?.orderCount} {t('orders')}</strong><small>{config.closePlan?.intervalSeconds}s {t('Time gap between orders').toLowerCase()}</small></>
           : premium
-          ? <><strong>{shortPremium ? '≥' : '≤'} {config.entryPremiumPct}%</strong>{config.reduceOnly
+          ? <><strong>{shortPremium ? '≥' : '≤'} {config.entryPremiumPct}{config.premiumMetric === 'ABSOLUTE' ? ' USD' : '%'}</strong>{config.reduceOnly
             ? <small>{t('Reduce only · stop at target')}</small>
             : config.grid
-            ? <small>{config.gridLevels} × {config.gridStepPct}% {t('grid')}</small>
+            ? <small>{config.gridLevels} × {config.gridStepPct}{config.premiumMetric === 'ABSOLUTE' ? ' USD' : '%'} {t('grid')}</small>
             : editingTakeProfitId === strategy.id
-              ? <small className="take-profit-editor"><span>{shortPremium ? '≤' : '≥'}</span><input aria-label={t('Take-profit premium')} inputMode="decimal" value={takeProfitDraft} onChange={(event) => setTakeProfitDraft(event.target.value)} onKeyDown={(event) => {
+              ? <small className="take-profit-editor"><span>{shortPremium ? '≤' : '≥'}</span><input aria-label={t(config.premiumMetric === 'ABSOLUTE' ? 'Take-profit spread' : 'Take-profit premium')} inputMode="decimal" value={takeProfitDraft} onChange={(event) => setTakeProfitDraft(event.target.value)} onKeyDown={(event) => {
                 if (event.key === 'Enter') void saveTakeProfit(strategy);
                 if (event.key === 'Escape') setEditingTakeProfitId(null);
-              }} autoFocus /><span>%</span><button className="save-take-profit" onClick={() => void saveTakeProfit(strategy)} disabled={updatingTakeProfitId === strategy.id}>{updatingTakeProfitId === strategy.id ? t('Saving…') : t('Save')}</button><button className="cancel-take-profit" aria-label={t('Cancel edit')} onClick={() => setEditingTakeProfitId(null)} disabled={updatingTakeProfitId === strategy.id}>×</button></small>
-              : <small className="take-profit-value"><span>{shortPremium ? '≤' : '≥'} {config.takeProfitPremiumPct}%</span>{strategy.status === 'RUNNING' && <button className="edit-take-profit" onClick={() => editTakeProfit(strategy)}>{t('Edit take profit')}</button>}</small>}</>
+              }} autoFocus /><span>{config.premiumMetric === 'ABSOLUTE' ? 'USD' : '%'}</span><button className="save-take-profit" onClick={() => void saveTakeProfit(strategy)} disabled={updatingTakeProfitId === strategy.id}>{updatingTakeProfitId === strategy.id ? t('Saving…') : t('Save')}</button><button className="cancel-take-profit" aria-label={t('Cancel edit')} onClick={() => setEditingTakeProfitId(null)} disabled={updatingTakeProfitId === strategy.id}>×</button></small>
+              : <small className="take-profit-value"><span>{shortPremium ? '≤' : '≥'} {config.takeProfitPremiumPct}{config.premiumMetric === 'ABSOLUTE' ? ' USD' : '%'}</span>{strategy.status === 'RUNNING' && <button className="edit-take-profit" onClick={() => editTakeProfit(strategy)}>{t('Edit take profit')}</button>}</small>}</>
           : <><strong>≥ {config.entryBps} bps</strong><small>{config.takeProfitBps ? `≤ ${config.takeProfitBps} bps` : t('Stop at full fill')}</small></>}</span>
         {showingHistory && <span className={`strategy-realized-pnl ${Number(strategy.realizedPnl) >= 0 ? 'positive' : 'negative'}`}><strong>{Number(strategy.realizedPnl) >= 0 ? '+' : ''}{Number(strategy.realizedPnl).toFixed(2)}</strong><small>USDT</small></span>}
         <span>{timedClose ? `${config.closePlan?.targets.length} ${t('Positions')} · ${config.closePlan?.orderCount} ${t('orders')}` : `${config.perOrderQuantity} ${config.asset} · ${t('max')} ${strategyMaxAmount(config)}`}</span>
@@ -379,7 +388,7 @@ export function RunningStrategiesPanel({ strategies, authenticatedPortfolio, tra
     {selectedLogStrategy && <div className="execution-log-backdrop" role="presentation" onMouseDown={() => setSelectedLogStrategyId(null)}>
       <section ref={logDialogRef} tabIndex={-1} className="execution-log-modal" role="dialog" aria-modal="true" aria-labelledby="execution-log-title" onMouseDown={(event) => event.stopPropagation()}>
         <header><div><p className="eyebrow">{t('Strategy execution log')}</p><h2 id="execution-log-title">{selectedLogStrategy.id}</h2><span>{strategyMarketLabel(selectedLogStrategy.config)} · {selectedLogStrategy.config.closePlan ? [...new Set(selectedLogStrategy.config.closePlan.targets.map((target) => symbolParts(target.symbol).venue))].join(' ⇄ ') : selectedLogStrategy.config.leftVenue === selectedLogStrategy.config.rightVenue ? selectedLogStrategy.config.leftVenue : `${selectedLogStrategy.config.leftVenue} ⇄ ${selectedLogStrategy.config.rightVenue}`}</span></div><button data-dialog-autofocus aria-label={t('Close execution log')} onClick={() => setSelectedLogStrategyId(null)}>×</button></header>
-        <div className="execution-log-summary"><div><span>{t('Strategy')}</span><strong>{t(selectedLogStrategy.config.closePlan ? 'Hedge position strategy' : selectedLogStrategy.kind === 'auto' ? 'Auto price difference' : selectedLogStrategy.kind === 'premium' ? 'SK hynix premium bot' : 'Cross-exchange hedge')}</strong></div><div><span>{t('Status')}</span><strong className="positive">● {selectedLogStrategy.status}</strong></div><div><span>{t('Execution method')}</span><strong>{selectedLogStrategy.config.executionMethod.replaceAll('_', '–')}</strong></div></div>
+        <div className="execution-log-summary"><div><span>{t('Strategy')}</span><strong>{kindLabel(selectedLogStrategy)}</strong></div><div><span>{t('Status')}</span><strong className="positive">● {selectedLogStrategy.status}</strong></div><div><span>{t('Execution method')}</span><strong>{selectedLogStrategy.config.executionMethod.replaceAll('_', '–')}</strong></div></div>
         <div className="execution-log-table">
           <div className="execution-log-head"><span>{t('Time')}</span><span>{t('Event')}</span><span>{t('Spread / trigger')}</span><span>{t('Quantity')}</span><span>{t('Execution result')}</span><span>{t('Result')}</span></div>
           {logLoadState.status === 'loading' && <div className="execution-log-state">{t('Loading execution log…')}</div>}
@@ -392,8 +401,8 @@ export function RunningStrategiesPanel({ strategies, authenticatedPortfolio, tra
             <span>{log.quantity}</span>
             <span className="execution-metric">
               {log.executionPremiumPct !== null ? <>
-                <strong className={Number(log.executionPremiumPct) >= 0 ? 'positive' : 'negative'}>{Number(log.executionPremiumPct) >= 0 ? '+' : ''}{log.executionPremiumPct}%</strong>
-                <small>{t('ADR premium')}</small>
+                <strong className={Number(log.executionPremiumPct) >= 0 ? 'positive' : 'negative'}>{Number(log.executionPremiumPct) >= 0 ? '+' : ''}{log.executionPremiumPct}{selectedLogStrategy.config.premiumMetric === 'ABSOLUTE' ? ' USD' : '%'}</strong>
+                <small>{t(selectedLogStrategy.config.premiumMetric === 'ABSOLUTE' ? 'BZ - CL spread' : 'ADR premium')}</small>
               </> : log.executionSpreadBps !== null ? <>
                 <strong className={Number(log.executionSpreadBps) >= 0 ? 'positive' : 'negative'}>{Number(log.executionSpreadBps) >= 0 ? '+' : ''}{log.executionSpreadBps} bps</strong>
                 <small>{t('Actual spread')}</small>
@@ -1032,6 +1041,7 @@ export function StrategyView({ mode, prefill, marketSnapshot, catalog, fees, str
 }
 
 interface PremiumStrategyViewProps {
+  variant?: 'hynix' | 'oil';
   marketSnapshot: MarketSnapshot | null;
   catalog: MarketCatalogAsset[] | null;
   strategies: StrategyRecord[];
@@ -1223,15 +1233,20 @@ function StrategyLeverageControl({
   </div>;
 }
 
-export function PremiumStrategyView({ marketSnapshot, catalog, strategies, balances, authenticatedPortfolio, tradingSnapshot, tradingMode, onOpenModeDialog, onStrategiesChanged, onPositionsRefresh, candleSeries, watchQuotes, watchKlines }: PremiumStrategyViewProps) {
+export function PremiumStrategyView({ variant = 'hynix', marketSnapshot, catalog, strategies, balances, authenticatedPortfolio, tradingSnapshot, tradingMode, onOpenModeDialog, onStrategiesChanged, onPositionsRefresh, candleSeries, watchQuotes, watchKlines }: PremiumStrategyViewProps) {
   const { language, theme, t } = useLanguage();
-  const [adrVenueId, setAdrVenueId] = useState('gate');
-  const [hedgeVenueId, setHedgeVenueId] = useState('gate');
+  const oil = variant === 'oil';
+  const asset = oil ? 'BZ' : ADR_ASSET;
+  const hedgeAsset = oil ? 'CL' : ADR_HEDGE_ASSET;
+  const premiumMetric = oil ? 'ABSOLUTE' : 'PERCENT';
+  const thresholdUnit = oil ? ' USD' : '%';
+  const [adrVenueId, setAdrVenueId] = useState(oil ? 'binance' : 'gate');
+  const [hedgeVenueId, setHedgeVenueId] = useState(oil ? 'binance' : 'gate');
   const [directionFlipped, setDirectionFlipped] = useState(false);
   const [perOrderQuantity, setPerOrderQuantity] = useState('');
-  const adrRatio = DEFAULT_ADR_RATIO;
-  const [entryPremium, setEntryPremium] = useState('35');
-  const [takeProfitPremium, setTakeProfitPremium] = useState('24');
+  const adrRatio = oil ? '1' : DEFAULT_ADR_RATIO;
+  const [entryPremium, setEntryPremium] = useState(oil ? '6' : '35');
+  const [takeProfitPremium, setTakeProfitPremium] = useState(oil ? '4' : '24');
   const [maxPosition, setMaxPosition] = useState('');
   const [reduceOnly, setReduceOnly] = useState(false);
   const [hedgeMode, setHedgeMode] = useState<'SHARE_RATIO' | 'EQUAL_NOTIONAL'>('EQUAL_NOTIONAL');
@@ -1242,7 +1257,7 @@ export function PremiumStrategyView({ marketSnapshot, catalog, strategies, balan
   const [launching, setLaunching] = useState(false);
   const [confirmingLaunch, setConfirmingLaunch] = useState(false);
   const [launchNotice, setLaunchNotice] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null);
-  const [premiumRange, setPremiumRange] = useState<PairHistoryRange>('24H');
+  const [premiumRange, setPremiumRange] = useState<OilHistoryRange>('24H');
   const [premiumCandles, setPremiumCandles] = useState<{
     key: string;
     adr: Candle[];
@@ -1264,15 +1279,16 @@ export function PremiumStrategyView({ marketSnapshot, catalog, strategies, balan
     const listed = catalog?.find((item) => item.asset === asset)?.venues.map((venueEntry) => venueEntry.venue.toLowerCase());
     return listed && listed.length > 0 ? exchanges.filter((venueEntry) => listed.includes(venueEntry.id)) : exchanges;
   };
-  const adrVenues = venuesFor(ADR_ASSET);
-  const hedgeVenues = venuesFor(ADR_HEDGE_ASSET);
+  const adrVenues = venuesFor(asset);
+  const hedgeVenues = venuesFor(hedgeAsset);
   const adrExchange = exchanges.find((item) => item.id === adrVenueId) ?? exchanges[0];
   const hedgeExchange = exchanges.find((item) => item.id === hedgeVenueId) ?? exchanges[0];
-  const adrSymbol = strategyVenueSymbol(catalog, adrVenueId, ADR_ASSET);
-  const hedgeSymbol = strategyVenueSymbol(catalog, hedgeVenueId, ADR_HEDGE_ASSET);
+  const adrSymbol = strategyVenueSymbol(catalog, adrVenueId, asset);
+  const hedgeSymbol = strategyVenueSymbol(catalog, hedgeVenueId, hedgeAsset);
   const adrInstrument = instruments?.find((instrument) => instrument.symbol === adrSymbol);
   const hedgeInstrument = instruments?.find((instrument) => instrument.symbol === hedgeSymbol);
-  const premiumHistoryInterval = PAIR_HISTORY_RANGES[premiumRange].interval;
+  const historyRanges = oil ? OIL_HISTORY_RANGES : PAIR_HISTORY_RANGES;
+  const premiumHistoryInterval = historyRanges[premiumRange as PairHistoryRange].interval;
   const premiumHistoryKey = `${adrSymbol}:${hedgeSymbol}:${premiumHistoryInterval}`;
 
   useEffect(() => {
@@ -1358,7 +1374,7 @@ export function PremiumStrategyView({ marketSnapshot, catalog, strategies, balan
   }, [premiumHistoryInterval, premiumHistoryKey, streamedAdrCandles, streamedHedgeCandles]);
 
   const loadOlderPremiumHistory = useCallback(() => {
-    const { interval } = PAIR_HISTORY_RANGES[premiumRange];
+    const { interval } = historyRanges[premiumRange as PairHistoryRange];
     const key = `${adrSymbol}:${hedgeSymbol}:${interval}`;
     if (premiumCandles.key !== key || premiumHistoryLoadingRef.current.has(key)) return;
     const oldestAdr = premiumCandles.adr[0];
@@ -1391,7 +1407,7 @@ export function PremiumStrategyView({ marketSnapshot, catalog, strategies, balan
     }).finally(() => {
       premiumHistoryLoadingRef.current.delete(key);
     });
-  }, [adrSymbol, hedgeSymbol, premiumCandles, premiumRange]);
+  }, [adrSymbol, hedgeSymbol, premiumCandles, premiumRange, historyRanges]);
 
   const livePairFreshness = assessMarketPairFreshness(marketSnapshot, adrSymbol, hedgeSymbol, freshnessNow);
   const livePair = livePairFreshness.pair;
@@ -1412,16 +1428,16 @@ export function PremiumStrategyView({ marketSnapshot, catalog, strategies, balan
   const ratioNumber = Number(adrRatio) || 0;
   // One hedge share converts to `ratio` ADR shares, so fair ADR value = hedge price ÷ ratio.
   const fairValue = ratioNumber > 0 ? hedgePrice / ratioNumber : 0;
-  const premiumNow = adrPrice > 0 && fairValue > 0 ? (adrPrice / fairValue - 1) * 100 : null;
+  const premiumNow = adrPrice > 0 && fairValue > 0 ? (oil ? adrPrice - fairValue : (adrPrice / fairValue - 1) * 100) : null;
   // Venue selection renders before the loading effect above runs. Gate the chart data against
   // the requested pair synchronously so the previous pair's series can never paint under the
   // new pair's heading, even for a single frame.
   const premiumHistoryIsCurrent = premiumCandles.key === premiumHistoryKey;
   const candidatePremiumPoints = useMemo(() => {
     return premiumHistoryIsCurrent
-      ? buildPremiumHistory(premiumCandles.adr, premiumCandles.hedge, ratioNumber, 0)
+      ? buildPremiumHistory(premiumCandles.adr, premiumCandles.hedge, ratioNumber, 0, premiumMetric)
       : [];
-  }, [premiumCandles.adr, premiumCandles.hedge, premiumHistoryIsCurrent, ratioNumber]);
+  }, [premiumCandles.adr, premiumCandles.hedge, premiumHistoryIsCurrent, ratioNumber, premiumMetric]);
   const premiumHistoryTailIsFresh = premiumHistoryIsCurrent
     && premiumCandles.status === 'live'
     && candleTailIsFresh(premiumCandles.adr, premiumHistoryInterval, freshnessNow)
@@ -1433,6 +1449,25 @@ export function PremiumStrategyView({ marketSnapshot, catalog, strategies, balan
         freshnessNow,
       ));
   const premiumPoints = premiumHistoryIsCurrent ? candidatePremiumPoints : [];
+  const oilStats = useMemo(() => {
+    if (!oil || !premiumHistoryIsCurrent || candidatePremiumPoints.length === 0) return null;
+    const latestTime = candidatePremiumPoints[candidatePremiumPoints.length - 1]?.time ?? 0;
+    const values = candidatePremiumPoints
+      .filter((point) => point.time >= latestTime - historyRanges[premiumRange as PairHistoryRange].durationMs)
+      .map((point) => point.value);
+    if (values.length === 0) return null;
+    const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+    const deviation = Math.sqrt(values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length);
+    const current = premiumNow ?? values[values.length - 1];
+    return {
+      count: values.length,
+      mean,
+      minimum: Math.min(...values),
+      maximum: Math.max(...values),
+      deviation,
+      zScore: deviation > 0 ? (current - mean) / deviation : null,
+    };
+  }, [oil, premiumHistoryIsCurrent, candidatePremiumPoints, historyRanges, premiumRange, premiumNow]);
   const premiumHistoryHasData = premiumPoints.length > 0;
   const latestPremiumPoint = premiumPoints[premiumPoints.length - 1] ?? null;
   const usableHoveredPremium = premiumHistoryHasData ? hoveredPremium : null;
@@ -1521,9 +1556,9 @@ export function PremiumStrategyView({ marketSnapshot, catalog, strategies, balan
   const marginInsufficient = !reduceOnly && marginEstimateAvailable && marginAssessment.insufficient;
   const foreignOppositePositions = authenticatedPortfolio?.snapshot.futuresPositions?.filter((position) => {
     const parts = symbolParts(position.symbol);
-    const isAdr = parts.asset === ADR_ASSET && parts.venue !== adrVenueId.toUpperCase()
+    const isAdr = parts.asset === asset && parts.venue !== adrVenueId.toUpperCase()
       && signedPortfolioQuantity(position) * plannedAdrQuantity < 0;
-    const isHedge = parts.asset === ADR_HEDGE_ASSET && parts.venue !== hedgeVenueId.toUpperCase()
+    const isHedge = parts.asset === hedgeAsset && parts.venue !== hedgeVenueId.toUpperCase()
       && signedPortfolioQuantity(position) * plannedHedgeQuantity < 0;
     return isAdr || isHedge;
   }) ?? [];
@@ -1534,18 +1569,18 @@ export function PremiumStrategyView({ marketSnapshot, catalog, strategies, balan
     if (!(perOrderNumber > 0)) return null;
     if (hedgeMode === 'EQUAL_NOTIONAL') {
       if (!(adrPrice > 0) || !(hedgePrice > 0)) return null;
-      return `≈ ${Number(((perOrderNumber * adrPrice) / hedgePrice).toFixed(6))} ${ADR_HEDGE_ASSET}`;
+      return `≈ ${Number(((perOrderNumber * adrPrice) / hedgePrice).toFixed(6))} ${hedgeAsset}`;
     }
     if (!(ratioNumber > 0)) return null;
-    return `${Number((perOrderNumber / ratioNumber).toFixed(8))} ${ADR_HEDGE_ASSET}`;
+    return `${Number((perOrderNumber / ratioNumber).toFixed(8))} ${hedgeAsset}`;
   })();
   const perOrderNumber = Number(perOrderQuantity);
   const hedgePerOrderNumber = hedgeMode === 'EQUAL_NOTIONAL'
     ? adrPrice > 0 && hedgePrice > 0 ? perOrderNumber * adrPrice / hedgePrice : 0
     : ratioNumber > 0 ? perOrderNumber / ratioNumber : 0;
   const premiumSizeIssues = [
-    minimumSizeIssue(adrInstrument, perOrderNumber, adrExchange.name, ADR_ASSET, t),
-    minimumSizeIssue(hedgeInstrument, hedgePerOrderNumber, hedgeExchange.name, ADR_HEDGE_ASSET, t),
+    minimumSizeIssue(adrInstrument, perOrderNumber, adrExchange.name, asset, t),
+    minimumSizeIssue(hedgeInstrument, hedgePerOrderNumber, hedgeExchange.name, hedgeAsset, t),
   ].filter((issue): issue is string => issue !== null);
   const premiumInstrumentsReady = adrInstrument !== undefined && hedgeInstrument !== undefined;
   const premiumInputsValid = isPositiveDecimal(perOrderQuantity)
@@ -1556,9 +1591,13 @@ export function PremiumStrategyView({ marketSnapshot, catalog, strategies, balan
     && (reduceOnly || (!premiumRiskReviewUnavailable && !premiumRiskLimitExceeded));
   const entryComparator = shortPremium ? '≥' : '≤';
   const exitComparator = shortPremium ? '≤' : '≥';
+  const validThreshold = /^-?\d+(?:\.\d+)?$/;
+  const thresholdsValid = validThreshold.test(entryPremium)
+    && (reduceOnly || (validThreshold.test(takeProfitPremium)
+      && (shortPremium ? Number(takeProfitPremium) < Number(entryPremium) : Number(takeProfitPremium) > Number(entryPremium))));
   const entryReady = livePair !== null && premiumNow !== null
     && (shortPremium ? premiumNow >= Number(entryPremium) : premiumNow <= Number(entryPremium));
-  const premiumLaunchReady = livePair !== null && !marginInsufficient && !leverageInvalid && premiumReviewValid;
+  const premiumLaunchReady = livePair !== null && thresholdsValid && !marginInsufficient && !leverageInvalid && premiumReviewValid;
 
   useEffect(() => setHoveredPremium(null), [historySeriesKey]);
 
@@ -1568,9 +1607,10 @@ export function PremiumStrategyView({ marketSnapshot, catalog, strategies, balan
     setLaunchNotice(null);
     const config: StrategyConfig = {
       kind: 'premium',
-      asset: ADR_ASSET,
-      hedgeAsset: ADR_HEDGE_ASSET,
+      asset: asset,
+      hedgeAsset: hedgeAsset,
       adrRatio,
+      premiumMetric,
       leftVenue: adrExchange.id.toUpperCase(),
       rightVenue: hedgeExchange.id.toUpperCase(),
       leftSide: shortPremium ? 'SELL' : 'BUY',
@@ -1610,93 +1650,129 @@ export function PremiumStrategyView({ marketSnapshot, catalog, strategies, balan
   }
 
   return <div className="alternate-view strategy-view">
-    <section className="view-heading strategy-heading"><div><p className="eyebrow">{t('ADR arbitrage')}</p><h1 className="beta-title">{t('SK hynix premium bot')} <span className="beta-tag">BETA</span></h1><p>{t('Use at your own risk.')} {t('Risk warning: The premium may expand, converge, or reverse at any time. Trading in either direction can result in substantial losses.')}</p></div><span className="demo-automation"><i /> {t('Backend automation · persistent state')}</span></section>
+    <section className="view-heading strategy-heading"><div><p className="eyebrow">{t(oil ? 'Oil spread' : 'ADR arbitrage')}</p><h1 className="beta-title">{t(oil ? 'BZ / CL oil spread bot' : 'SK hynix premium bot')} <span className="beta-tag">BETA</span></h1><p>{t('Use at your own risk.')} {t(oil ? 'Oil prices and the Brent–WTI spread can change sharply. Both legs carry execution and liquidation risk.' : 'Risk warning: The premium may expand, converge, or reverse at any time. Trading in either direction can result in substantial losses.')}</p></div><span className="demo-automation"><i /> {t('Backend automation · persistent state')}</span></section>
 
     <section className={`strategy-layout revised ${directionFlipped ? 'direction-flipped' : ''}`}>
       <div className="strategy-main">
         <article className="strategy-panel strategy-market-panel terminal-panel">
-          <header className="strategy-panel-head"><div><p className="eyebrow">{t('Market & venues')}</p></div><div className="premium-pair-badge"><strong>{ADR_ASSET} / {ADR_HEDGE_ASSET}</strong><small>1 {ADR_HEDGE_ASSET} = {adrRatio || '—'} {ADR_ASSET}</small></div></header>
+          <header className="strategy-panel-head"><div><p className="eyebrow">{t('Market & venues')}</p></div><div className="premium-pair-badge"><strong>{asset} / {hedgeAsset}</strong><small>{oil ? 'Brent − WTI · USD/barrel' : `1 ${hedgeAsset} = ${adrRatio || '—'} ${asset}`}</small></div></header>
           <div className="strategy-legs">
-            <div className="strategy-leg sell-leg"><div className="leg-top"><VenueSelect label={t('ADR leg')} menuSubtitle={`${ADR_ASSET} ${t('Perpetual').toLowerCase()}`} options={adrVenues.map((venueEntry) => ({ ...venueEntry, detail: marketSymbol(ADR_ASSET, quoteFor(venueEntry.id), 'perpetual') }))} value={adrVenueId} onSelect={setAdrVenueId} /><em>{t(adrSide)} {ADR_ASSET}</em></div><dl><div><dt>{t('Best price')}</dt><dd>{priceText(adrPrice)}</dd></div><div><dt>{t('Fair ADR value')}</dt><dd>{priceText(fairValue)}</dd></div><div><dt>{t(sharedMarginMode ? 'Shared margin' : 'Available')}</dt><dd>{adrBalance ? `${Number(adrBalance).toLocaleString(undefined, { maximumFractionDigits: 2 })} ${adrBalanceUnit}` : '—'}</dd></div></dl></div>
+            <div className="strategy-leg sell-leg"><div className="leg-top"><VenueSelect label={t(oil ? 'Brent leg' : 'ADR leg')} menuSubtitle={`${asset} ${t('Perpetual').toLowerCase()}`} options={adrVenues.map((venueEntry) => ({ ...venueEntry, detail: marketSymbol(asset, quoteFor(venueEntry.id), 'perpetual') }))} value={adrVenueId} onSelect={setAdrVenueId} /><em>{t(adrSide)} {asset}</em></div><dl><div><dt>{t('Best price')}</dt><dd>{priceText(adrPrice)}</dd></div><div><dt>{t(oil ? 'WTI price' : 'Fair ADR value')}</dt><dd>{priceText(fairValue)}</dd></div><div><dt>{t(sharedMarginMode ? 'Shared margin' : 'Available')}</dt><dd>{adrBalance ? `${Number(adrBalance).toLocaleString(undefined, { maximumFractionDigits: 2 })} ${adrBalanceUnit}` : '—'}</dd></div></dl></div>
             <div className="leg-spread">
-              <span>{t('ADR premium')}</span>
-              <strong className={premiumNow !== null && premiumNow >= 0 ? 'positive' : 'negative'}>{premiumNow !== null ? `${premiumNow >= 0 ? '+' : ''}${premiumNow.toFixed(2)}%` : '—'}</strong>
+              <span>{t(oil ? 'BZ - CL spread' : 'ADR premium')}</span>
+              <strong className={premiumNow !== null && premiumNow >= 0 ? 'positive' : 'negative'}>{premiumNow !== null ? `${premiumNow >= 0 ? '+' : ''}${premiumNow.toFixed(2)}${thresholdUnit}` : '—'}</strong>
               <div className={`spread-thesis ${shortPremium ? 'convergence' : 'expansion'}`}>
                 <small>{t('Trade thesis')}</small>
                 <b>{t(shortPremium ? 'Spread convergence' : 'Spread expansion')}</b>
-                <em>{t(shortPremium ? 'Premium expected to fall' : 'Premium expected to rise')} {shortPremium ? '↓' : '↑'}</em>
+                <em>{t(oil ? shortPremium ? 'Spread expected to fall' : 'Spread expected to rise' : shortPremium ? 'Premium expected to fall' : 'Premium expected to rise')} {shortPremium ? '↓' : '↑'}</em>
               </div>
               <button className="switch-direction" onClick={() => setDirectionFlipped((current) => !current)} aria-label={t('Switch direction')}>⇄</button>
               <small>{t('Switch direction')}</small>
             </div>
-            <div className="strategy-leg buy-leg"><div className="leg-top"><VenueSelect label={t('Hedge leg')} menuSubtitle={`${ADR_HEDGE_ASSET} ${t('Perpetual').toLowerCase()}`} options={hedgeVenues.map((venueEntry) => ({ ...venueEntry, detail: marketSymbol(ADR_HEDGE_ASSET, quoteFor(venueEntry.id), 'perpetual') }))} value={hedgeVenueId} onSelect={setHedgeVenueId} /><em>{t(hedgeSide)} {ADR_HEDGE_ASSET}</em></div><dl><div><dt>{t('Best price')}</dt><dd>{priceText(hedgePrice)}</dd></div><div><dt>{t('Hedge per order')}</dt><dd>{hedgePerOrderText ?? '—'}</dd></div><div><dt>{t(sharedMarginMode ? 'Shared margin' : 'Available')}</dt><dd>{hedgeBalance ? `${Number(hedgeBalance).toLocaleString(undefined, { maximumFractionDigits: 2 })} ${hedgeBalanceUnit}` : '—'}</dd></div></dl></div>
+            <div className="strategy-leg buy-leg"><div className="leg-top"><VenueSelect label={t(oil ? 'WTI leg' : 'Hedge leg')} menuSubtitle={`${hedgeAsset} ${t('Perpetual').toLowerCase()}`} options={hedgeVenues.map((venueEntry) => ({ ...venueEntry, detail: marketSymbol(hedgeAsset, quoteFor(venueEntry.id), 'perpetual') }))} value={hedgeVenueId} onSelect={setHedgeVenueId} /><em>{t(hedgeSide)} {hedgeAsset}</em></div><dl><div><dt>{t('Best price')}</dt><dd>{priceText(hedgePrice)}</dd></div><div><dt>{t('Hedge per order')}</dt><dd>{hedgePerOrderText ?? '—'}</dd></div><div><dt>{t(sharedMarginMode ? 'Shared margin' : 'Available')}</dt><dd>{hedgeBalance ? `${Number(hedgeBalance).toLocaleString(undefined, { maximumFractionDigits: 2 })} ${hedgeBalanceUnit}` : '—'}</dd></div></dl></div>
           </div>
           {!livePair && <div className="premium-data-hint"><span>ⓘ</span><p>{livePairWaitMessage}</p></div>}
         </article>
-        <article className="premium-history-panel terminal-panel">
+        <article className={`premium-history-panel terminal-panel${oil ? ' oil-history-panel' : ''}`}>
           <header className="premium-history-head">
             <div>
-              <p className="eyebrow">{t('Historical premium')}</p>
-              <h2>{adrExchange.name} {ADR_ASSET} <span>vs</span> {hedgeExchange.name} {ADR_HEDGE_ASSET} ÷ {adrRatio || '—'}</h2>
+              <p className="eyebrow">{t(oil ? 'Historical oil spread' : 'Historical premium')}</p>
+              <h2>{adrExchange.name} {asset} <span>vs</span> {hedgeExchange.name} {hedgeAsset}{oil ? '' : ` ÷ ${adrRatio || '—'}`}</h2>
               <small>{t('Selected venue pair')}</small>
             </div>
             <div className="premium-history-controls">
               <span className={`premium-live-badge ${historyStatus === 'live' ? '' : 'loading'}`}><i /> {t(historyStatus === 'live' ? 'Live pair' : historyStatus === 'stale' ? 'Stale history' : historyStatus === 'empty' ? 'No data' : historyStatus === 'failed' ? 'Unavailable' : 'Loading')}</span>
-              <div role="group" aria-label={t('Historical premium')}>
-                {(Object.keys(PAIR_HISTORY_RANGES) as PairHistoryRange[]).map((range) =>
+              <div role="group" aria-label={t(oil ? 'Historical oil spread' : 'Historical premium')}>
+                {(Object.keys(historyRanges) as OilHistoryRange[]).map((range) =>
                   <button key={range} className={premiumRange === range ? 'active' : ''} onClick={() => setPremiumRange(range)}>{range}</button>)}
               </div>
             </div>
           </header>
           <div className="premium-history-summary">
             <div className="premium-history-value">
-              <span><i /> {adrExchange.name} / {hedgeExchange.name} {t('ADR premium')}</span>
+              <span><i /> {adrExchange.name} / {hedgeExchange.name} {t(oil ? 'BZ - CL spread' : 'ADR premium')}</span>
               <strong className={displayedPremium !== null && displayedPremium < 0 ? 'negative' : ''}>
-                {displayedPremium !== null ? `${displayedPremium >= 0 ? '+' : ''}${displayedPremium.toFixed(2)}%` : '—'}
+                {displayedPremium !== null ? `${displayedPremium >= 0 ? '+' : ''}${displayedPremium.toFixed(2)}${thresholdUnit}` : '—'}
               </strong>
               <small>{displayedPremiumPoint
                 ? new Date(displayedPremiumPoint.time).toLocaleString(language === 'zh' ? 'zh-CN' : 'en-GB', {
                   month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false, timeZoneName: 'short',
                 })
-                : `${ADR_ASSET} vs ${ADR_HEDGE_ASSET} ÷ ${adrRatio || '—'}`}</small>
+                : oil ? `${asset} − ${hedgeAsset}` : `${asset} vs ${hedgeAsset} ÷ ${adrRatio || '—'}`}</small>
             </div>
             <dl>
-              <div><dt>{t('SKHY Price')}</dt><dd>{displayedAdrPrice !== null ? priceText(displayedAdrPrice) : '—'}</dd></div>
-              <div><dt>{t('SKHYNIX Price')}</dt><dd>{displayedHedgePrice !== null ? priceText(displayedHedgePrice) : '—'}</dd></div>
-              <div><dt>{t('Fair SKHY price')}</dt><dd>{displayedFairValue !== null ? priceText(displayedFairValue) : '—'}</dd></div>
-              <div><dt>{t('Premium gap')}</dt><dd>{displayedGap !== null ? `${displayedGap >= 0 ? '+' : ''}${priceText(displayedGap)}` : '—'}</dd></div>
+              <div><dt>{t(oil ? 'BZ price' : 'SKHY Price')}</dt><dd>{displayedAdrPrice !== null ? priceText(displayedAdrPrice) : '—'}</dd></div>
+              <div><dt>{t(oil ? 'CL price' : 'SKHYNIX Price')}</dt><dd>{displayedHedgePrice !== null ? priceText(displayedHedgePrice) : '—'}</dd></div>
+              {!oil && <div><dt>{t('Fair SKHY price')}</dt><dd>{displayedFairValue !== null ? priceText(displayedFairValue) : '—'}</dd></div>}
+              <div><dt>{t(oil ? 'Price gap' : 'Premium gap')}</dt><dd>{displayedGap !== null ? `${displayedGap >= 0 ? '+' : ''}${priceText(displayedGap)}` : '—'}</dd></div>
             </dl>
           </div>
+          {oil && <div className="oil-spread-reference">
+            <span>{t('Reference spread band')}: 3–6 USD</span>
+            <small>{t('For context only. Set entry and take-profit thresholds from current market data.')}</small>
+          </div>}
+          {oil && oilStats && <dl className="oil-spread-stats">
+            <div><dt>{t('Sample mean')}</dt><dd>{oilStats.mean.toFixed(2)} USD</dd></div>
+            <div><dt>{t('Sample minimum')}</dt><dd>{oilStats.minimum.toFixed(2)} USD</dd></div>
+            <div><dt>{t('Sample maximum')}</dt><dd>{oilStats.maximum.toFixed(2)} USD</dd></div>
+            <div><dt>{t('Standard deviation')}</dt><dd>{oilStats.deviation.toFixed(2)} USD</dd></div>
+            <div><dt>{t('Z-score')}</dt><dd>{oilStats.zScore === null ? '—' : oilStats.zScore.toFixed(2)}</dd></div>
+            <div><dt>{t('Aligned samples')}</dt><dd>{oilStats.count}</dd></div>
+          </dl>}
           <Suspense fallback={<div className="premium-history-chart chart-module-loading" role="status">{t('Loading premium history…')}</div>}>
-            <PremiumHistoryChart
+            {oil ? <OilSpreadHistoryChart
               key={historySeriesKey}
               points={premiumPoints}
               seriesKey={historySeriesKey}
-              visibleDurationMs={PAIR_HISTORY_RANGES[premiumRange].durationMs}
+              visibleDurationMs={historyRanges[premiumRange as PairHistoryRange].durationMs}
               theme={theme}
               locale={language === 'zh' ? 'zh-CN' : 'en-US'}
               placeholder={historyPlaceholder}
               onHover={setHoveredPremium}
               onLoadMore={loadOlderPremiumHistory}
-            />
+            /> : <PremiumHistoryChart
+              key={historySeriesKey}
+              points={premiumPoints}
+              seriesKey={historySeriesKey}
+              visibleDurationMs={historyRanges[premiumRange as PairHistoryRange].durationMs}
+              theme={theme}
+              locale={language === 'zh' ? 'zh-CN' : 'en-US'}
+              placeholder={historyPlaceholder}
+              onHover={setHoveredPremium}
+              onLoadMore={loadOlderPremiumHistory}
+            />}
           </Suspense>
+          {oil && <>
+            <div className="oil-prices-head"><span>{t('Brent and WTI prices')}</span><small><i /> BZ <i /> CL</small></div>
+            <Suspense fallback={<div className="oil-prices-chart chart-module-loading" role="status">{t('Loading premium history…')}</div>}>
+              <OilPricesChart
+                points={premiumPoints}
+                seriesKey={historySeriesKey}
+                visibleDurationMs={historyRanges[premiumRange as PairHistoryRange].durationMs}
+                theme={theme}
+                locale={language === 'zh' ? 'zh-CN' : 'en-US'}
+                placeholder={historyPlaceholder}
+                onHover={setHoveredPremium}
+              />
+            </Suspense>
+          </>}
         </article>
       </div>
 
       <aside className="strategy-sidebar">
         <article className="strategy-panel strategy-rules compact strategy-rules-sidebar terminal-panel">
-          <header className="strategy-panel-head"><div><p className="eyebrow">{t('Strategy setup')}</p><h2>{t('Configure premium bot')}</h2></div></header>
+          <header className="strategy-panel-head"><div><p className="eyebrow">{t('Strategy setup')}</p><h2>{t(oil ? 'Configure oil spread bot' : 'Configure premium bot')}</h2></div></header>
           <div className="compact-fields">
-            <label><span>{t('Per-order quantity')}</span><div><input placeholder="e.g. 0.10" value={perOrderQuantity} onChange={(event) => setPerOrderQuantity(event.target.value)} /><b>{ADR_ASSET}</b></div></label>
-            <label><span>{t(reduceOnly ? 'Max close amount' : 'Max position')}</span><div><input placeholder="e.g. 0.50" value={maxPosition} onChange={(event) => setMaxPosition(event.target.value)} /><b>{ADR_ASSET}</b></div></label>
-            <label><span>{t('Entry premium')}</span><div><input value={entryPremium} onChange={(event) => setEntryPremium(event.target.value)} /><b>%</b></div></label>
-            <label className={reduceOnly ? 'inactive-for-reduce-only' : ''}><span>{t('Take-profit premium')}</span><div><input value={takeProfitPremium} onChange={(event) => setTakeProfitPremium(event.target.value)} disabled={reduceOnly} /><b>%</b></div></label>
-            <StrategyLeverageControl label="SKHY leverage" symbol={adrSymbol} exchangeName={adrExchange.name}
-              asset={ADR_ASSET} quote={quoteFor(adrVenueId)} value={adrLeverage} referencePrice={adrPrice}
+            <label><span>{t('Per-order quantity')}</span><div><input placeholder="e.g. 0.10" value={perOrderQuantity} onChange={(event) => setPerOrderQuantity(event.target.value)} /><b>{asset}</b></div></label>
+            <label><span>{t(reduceOnly ? 'Max close amount' : 'Max position')}</span><div><input placeholder="e.g. 0.50" value={maxPosition} onChange={(event) => setMaxPosition(event.target.value)} /><b>{asset}</b></div></label>
+            <label><span>{t(oil ? 'Entry spread' : 'Entry premium')}</span><div><input value={entryPremium} onChange={(event) => setEntryPremium(event.target.value)} /><b>{thresholdUnit.trim()}</b></div></label>
+            <label className={reduceOnly ? 'inactive-for-reduce-only' : ''}><span>{t(oil ? 'Take-profit spread' : 'Take-profit premium')}</span><div><input value={takeProfitPremium} onChange={(event) => setTakeProfitPremium(event.target.value)} disabled={reduceOnly} /><b>{thresholdUnit.trim()}</b></div></label>
+            <StrategyLeverageControl label={oil ? 'BZ leverage' : 'SKHY leverage'} symbol={adrSymbol} exchangeName={adrExchange.name}
+              asset={asset} quote={quoteFor(adrVenueId)} value={adrLeverage} referencePrice={adrPrice}
               fallbackCurrent={adrPortfolioPosition?.leverage} fallbackMax={adrPortfolioPosition?.maxLeverage}
               tradingMode={tradingMode} disabled={reduceOnly} onOpenModeDialog={onOpenModeDialog} onValueChange={setAdrLeverage} onRiskLimitChange={setAdrRiskPositionValue} />
-            <StrategyLeverageControl label="SKHYNIX leverage" symbol={hedgeSymbol} exchangeName={hedgeExchange.name}
-              asset={ADR_HEDGE_ASSET} quote={quoteFor(hedgeVenueId)} value={hedgeLeverage} referencePrice={hedgePrice}
+            <StrategyLeverageControl label={oil ? 'CL leverage' : 'SKHYNIX leverage'} symbol={hedgeSymbol} exchangeName={hedgeExchange.name}
+              asset={hedgeAsset} quote={quoteFor(hedgeVenueId)} value={hedgeLeverage} referencePrice={hedgePrice}
               fallbackCurrent={hedgePortfolioPosition?.leverage} fallbackMax={hedgePortfolioPosition?.maxLeverage}
               tradingMode={tradingMode} disabled={reduceOnly} onOpenModeDialog={onOpenModeDialog} onValueChange={setHedgeLeverage} onRiskLimitChange={setHedgeRiskPositionValue} />
           </div>
@@ -1708,13 +1784,13 @@ export function PremiumStrategyView({ marketSnapshot, catalog, strategies, balan
             : t('Configured position fits the leverage-tier limits')}</p></div>}
           <div className="strategy-setup-actions">
             <div className="compact-trigger"><span className={entryReady ? 'ready' : ''}>{entryReady ? '✓' : '○'}</span><p>{reduceOnly
-              ? <>{t('Reduce existing positions at')} <strong>{entryComparator} {entryPremium || '0'}%</strong></>
-              : <>{t('Enter at')} <strong>{entryComparator} {entryPremium || '0'}%</strong> · {t('Take profit at')} <strong>{exitComparator} {takeProfitPremium || '0'}%</strong></>}</p></div>
+              ? <>{t('Reduce existing positions at')} <strong>{entryComparator} {entryPremium || '0'}{thresholdUnit}</strong></>
+              : <>{t('Enter at')} <strong>{entryComparator} {entryPremium || '0'}{thresholdUnit}</strong> · {t('Take profit at')} <strong>{exitComparator} {takeProfitPremium || '0'}{thresholdUnit}</strong></>}</p></div>
             <label className="reduce-only-control premium-reduce-only-control"><span onClick={(event) => event.preventDefault()}>{t('Position handling')}</span><div><input type="checkbox" checked={reduceOnly} onChange={(event) => setReduceOnly(event.target.checked)} /><b>{t('Reduce only')}</b></div></label>
             <div className="compact-method premium-hedge-sizing"><span>{t('Hedge sizing')}</span>
               <div className="method-options maker-leg-picker hedge-sizing-options" role="group" aria-label={t('Hedge sizing')}>
                 <button type="button" aria-pressed={hedgeMode === 'EQUAL_NOTIONAL'} className={hedgeMode === 'EQUAL_NOTIONAL' ? 'active' : ''} onClick={() => setHedgeMode('EQUAL_NOTIONAL')}><small>{t('Equal notional')}</small><strong>{t('Match value at entry')}</strong></button>
-                <button type="button" aria-pressed={hedgeMode === 'SHARE_RATIO'} className={hedgeMode === 'SHARE_RATIO' ? 'active' : ''} onClick={() => setHedgeMode('SHARE_RATIO')}><small>{t('Share ratio')}</small><strong>1 {ADR_HEDGE_ASSET} = {adrRatio || '—'} {ADR_ASSET}</strong></button>
+                <button type="button" aria-pressed={hedgeMode === 'SHARE_RATIO'} className={hedgeMode === 'SHARE_RATIO' ? 'active' : ''} onClick={() => setHedgeMode('SHARE_RATIO')}><small>{t('Share ratio')}</small><strong>{oil ? `1 ${asset} ≈ 1 ${hedgeAsset}` : `1 ${hedgeAsset} = ${adrRatio || '—'} ${asset}`}</strong></button>
               </div>
             </div>
           </div>
@@ -1722,13 +1798,13 @@ export function PremiumStrategyView({ marketSnapshot, catalog, strategies, balan
         </article>
         <article className="strategy-launch terminal-panel">
           <div className="launch-status"><span><i />{t('Review & launch')}</span><small>{t(reduceOnly ? 'Reduce only' : 'One cycle')}</small></div>
-          <div className="launch-intent"><div><small>{t('Strategy')}</small><strong>{t(reduceOnly ? 'Reduce existing positions' : shortPremium ? 'Short premium' : 'Long premium')}</strong></div><p><span className={adrSide.toLowerCase()}>{t(adrSide)} {ADR_ASSET} · {adrExchange.name}</span><i>⇄</i><span className={hedgeSide.toLowerCase()}>{t(hedgeSide)} {ADR_HEDGE_ASSET} · {hedgeExchange.name}</span></p></div>
+          <div className="launch-intent"><div><small>{t('Strategy')}</small><strong>{t(reduceOnly ? 'Reduce existing positions' : shortPremium ? oil ? 'Short spread' : 'Short premium' : oil ? 'Long spread' : 'Long premium')}</strong></div><p><span className={adrSide.toLowerCase()}>{t(adrSide)} {asset} · {adrExchange.name}</span><i>⇄</i><span className={hedgeSide.toLowerCase()}>{t(hedgeSide)} {hedgeAsset} · {hedgeExchange.name}</span></p></div>
           <dl className="launch-summary review-grid">
-            <div><dt>{t(reduceOnly ? 'Trigger' : 'Entry')}</dt><dd>{entryComparator} {entryPremium || '0'}%</dd></div>
-            {!reduceOnly && <div><dt>{t('Take profit')}</dt><dd>{exitComparator} {takeProfitPremium || '0'}%</dd></div>}
-            <div><dt>{t('Per order')}</dt><dd>{perOrderQuantity || '0'} {ADR_ASSET}</dd></div>
+            <div><dt>{t(reduceOnly ? 'Trigger' : 'Entry')}</dt><dd>{entryComparator} {entryPremium || '0'}{thresholdUnit}</dd></div>
+            {!reduceOnly && <div><dt>{t('Take profit')}</dt><dd>{exitComparator} {takeProfitPremium || '0'}{thresholdUnit}</dd></div>}
+            <div><dt>{t('Per order')}</dt><dd>{perOrderQuantity || '0'} {asset}</dd></div>
             <div><dt>{t('Hedge per order')}</dt><dd>{hedgePerOrderText ?? '—'}</dd></div>
-            <div><dt>{t(reduceOnly ? 'Max close amount' : 'Max position')}</dt><dd>{maxPosition || '0'} {ADR_ASSET}</dd></div>
+            <div><dt>{t(reduceOnly ? 'Max close amount' : 'Max position')}</dt><dd>{maxPosition || '0'} {asset}</dd></div>
             {!reduceOnly && <div><dt>{t('Leverage')}</dt><dd>{adrLeverage || '—'}× / {hedgeLeverage || '—'}×</dd></div>}
             {!reduceOnly && <div><dt>{t('Max position at selected leverage')}</dt><dd>{adrRiskPositionValue !== null && adrRiskPositionValue !== undefined ? formatAmount(adrRiskPositionValue) : '—'} {quoteFor(adrVenueId)} / {hedgeRiskPositionValue !== null && hedgeRiskPositionValue !== undefined ? formatAmount(hedgeRiskPositionValue) : '—'} {quoteFor(hedgeVenueId)}</dd></div>}
             {!reduceOnly && <div><dt>{t('Projected position')}</dt><dd>{projectedAdrPositionValue !== null ? formatAmount(projectedAdrPositionValue) : '—'} {quoteFor(adrVenueId)} / {projectedHedgePositionValue !== null ? formatAmount(projectedHedgePositionValue) : '—'} {quoteFor(hedgeVenueId)}</dd></div>}
@@ -1737,20 +1813,20 @@ export function PremiumStrategyView({ marketSnapshot, catalog, strategies, balan
           </dl>
           {!reduceOnly && foreignOppositePositions.length > 0 && <div className="launch-warning"><span>ⓘ</span><p>{t('Positions on another venue do not reduce this strategy’s margin requirement. Only positions on the selected exchange are offset.')}</p></div>}
           {premiumRiskLimitExceeded && <div className="launch-warning"><span>!</span><p>{t('Configured position exceeds the maximum at selected leverage')}</p></div>}
-          <button className={tradingEnabled ? 'start-strategy' : 'start-strategy locked'} onClick={requestStrategyLaunch} disabled={launching || (tradingEnabled && !premiumLaunchReady)}>{launching ? t('Launching…') : !tradingEnabled ? t('Live trading locked') : !livePair ? t('Loading live data…') : premiumRiskLimitExceeded ? t('Position exceeds leverage limit') : premiumRiskReviewUnavailable ? t('Loading position limits…') : !premiumInputsValid ? t('Enter valid strategy amounts') : leverageInvalid ? t('Invalid leverage') : marginInsufficient ? t('Insufficient margin') : t(reduceOnly ? 'Launch reduce-only strategy' : 'Launch strategy')}</button>
+          <button className={tradingEnabled ? 'start-strategy' : 'start-strategy locked'} onClick={requestStrategyLaunch} disabled={launching || (tradingEnabled && !premiumLaunchReady)}>{launching ? t('Launching…') : !tradingEnabled ? t('Live trading locked') : !livePair ? t('Loading live data…') : !thresholdsValid ? t('Enter valid thresholds') : premiumRiskLimitExceeded ? t('Position exceeds leverage limit') : premiumRiskReviewUnavailable ? t('Loading position limits…') : !premiumInputsValid ? t('Enter valid strategy amounts') : leverageInvalid ? t('Invalid leverage') : marginInsufficient ? t('Insufficient margin') : t(reduceOnly ? 'Launch reduce-only strategy' : 'Launch strategy')}</button>
           {launchNotice && <div className={`launch-notice ${launchNotice.kind}`}>{launchNotice.text}</div>}
         </article>
       </aside>
     </section>
 
     {confirmingLaunch && <StrategyLaunchConfirmation
-      market={`${ADR_ASSET} / ${ADR_HEDGE_ASSET} · ${adrExchange.name} ⇄ ${hedgeExchange.name}`}
+      market={`${asset} / ${hedgeAsset} · ${adrExchange.name} ⇄ ${hedgeExchange.name}`}
       rows={[
-        { label: t('Direction'), value: `${t(adrSide)} ${ADR_ASSET} ⇄ ${t(hedgeSide)} ${ADR_HEDGE_ASSET}` },
-        { label: t(reduceOnly ? 'Trigger' : 'Entry'), value: `${entryComparator} ${entryPremium || '0'}%` },
-        ...(!reduceOnly ? [{ label: t('Take profit'), value: `${exitComparator} ${takeProfitPremium || '0'}%` }] : []),
-        { label: t(reduceOnly ? 'Max close amount' : 'Max position'), value: `${maxPosition} ${ADR_ASSET}` },
-        { label: t('Per order'), value: `${perOrderQuantity} ${ADR_ASSET}` },
+        { label: t('Direction'), value: `${t(adrSide)} ${asset} ⇄ ${t(hedgeSide)} ${hedgeAsset}` },
+        { label: t(reduceOnly ? 'Trigger' : 'Entry'), value: `${entryComparator} ${entryPremium || '0'}${thresholdUnit}` },
+        ...(!reduceOnly ? [{ label: t('Take profit'), value: `${exitComparator} ${takeProfitPremium || '0'}${thresholdUnit}` }] : []),
+        { label: t(reduceOnly ? 'Max close amount' : 'Max position'), value: `${maxPosition} ${asset}` },
+        { label: t('Per order'), value: `${perOrderQuantity} ${asset}` },
         { label: t('Hedge per order'), value: hedgePerOrderText ?? '—' },
         ...(!reduceOnly ? [{ label: t('Leverage'), value: `${adrLeverage}× / ${hedgeLeverage}×` }] : []),
         { label: t('Hedge sizing'), value: t(hedgeMode === 'EQUAL_NOTIONAL' ? 'Equal notional' : 'Share ratio') },

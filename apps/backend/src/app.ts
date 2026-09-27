@@ -902,6 +902,7 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     app.get('/strategies/paired-position', sendFrontend);
     app.get('/strategies/price-difference', sendFrontend);
     app.get('/strategies/sk-hynix-premium', sendFrontend);
+    app.get('/strategies/bz-cl-spread', sendFrontend);
     app.get('/strategies/boros', sendFrontend);
   }
 

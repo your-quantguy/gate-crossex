@@ -1117,6 +1117,39 @@ describe('strategy engine', () => {
     expect(exitLogs.some((log) => log.event === 'Left leg filled' || log.event === 'Right leg filled')).toBe(false);
   });
 
+  it('triggers a BZ/CL spread in USD and routes Hyperliquid Brent by its native symbol', async () => {
+    const { engine, runtime, gateway, markets } = await createHarness();
+    markets.set('HYPERLIQUID_FUTURE_BRENTOIL_USDC', '98.6', '98.7');
+    markets.set('BINANCE_FUTURE_CL_USDT', '93.3', '93.4');
+    const record = await engine.startStrategy({
+      kind: 'premium', premiumMetric: 'ABSOLUTE', asset: 'BZ', hedgeAsset: 'CL', adrRatio: '1',
+      leftVenue: 'HYPERLIQUID', rightVenue: 'BINANCE', leftSide: 'SELL', rightSide: 'BUY',
+      entryPremiumPct: '5', takeProfitPremiumPct: '3', maxPosition: '1', perOrderQuantity: '1',
+      reduceOnly: false, executionMethod: 'TAKER_TAKER', hedgeMode: 'SHARE_RATIO',
+    });
+    const entry = engine.tick();
+    await waitFor(() => gateway.createdOrders.length === 2);
+    expect(gateway.createdOrders.map((order) => [order.symbol, order.side])).toEqual([
+      ['HYPERLIQUID_FUTURE_BRENTOIL_USDC', 'SELL'],
+      ['BINANCE_FUTURE_CL_USDT', 'BUY'],
+    ]);
+    ackOrder(runtime, 'remote-1', 'FILLED', '1', '98.6');
+    ackOrder(runtime, 'remote-2', 'FILLED', '1', '93.4');
+    await entry;
+    markets.set('HYPERLIQUID_FUTURE_BRENTOIL_USDC', '96', '96.1');
+    markets.set('BINANCE_FUTURE_CL_USDT', '93.6', '93.7');
+    const exit = engine.tick();
+    await waitFor(() => gateway.createdOrders.length === 4);
+    expect(gateway.createdOrders.slice(2).map((order) => [order.symbol, order.side, order.reduce_only])).toEqual([
+      ['HYPERLIQUID_FUTURE_BRENTOIL_USDC', 'BUY', 'true'],
+      ['BINANCE_FUTURE_CL_USDT', 'SELL', 'true'],
+    ]);
+    ackOrder(runtime, 'remote-3', 'FILLED', '1', '96.1');
+    ackOrder(runtime, 'remote-4', 'FILLED', '1', '93.6');
+    await exit;
+    expect(runtime.getStrategy(record.id).status).toBe('COMPLETED');
+  });
+
   it('reduces existing premium positions in per-order clips and stops without a take-profit cycle', async () => {
     const { engine, runtime, gateway, markets } = await createHarness();
     gateway.positions = [

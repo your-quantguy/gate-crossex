@@ -221,7 +221,7 @@ function SpreadHistoryChart<T extends HistoryChartPoint>({
   onLoadMore,
   unit,
   ariaLabel,
-}: HistoryChartProps<T> & { unit: '%' | ' bps'; ariaLabel: string }) {
+}: HistoryChartProps<T> & { unit: '%' | ' bps' | ' USD'; ariaLabel: string }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<'Area'> | null>(null);
@@ -358,6 +358,76 @@ function SpreadHistoryChart<T extends HistoryChartPoint>({
 
 export function PremiumHistoryChart(props: HistoryChartProps<PremiumHistoryPoint>) {
   return <SpreadHistoryChart {...props} unit="%" ariaLabel="Historical ADR premium" />;
+}
+
+export function OilSpreadHistoryChart(props: HistoryChartProps<PremiumHistoryPoint>) {
+  return <SpreadHistoryChart {...props} unit=" USD" ariaLabel="Historical Brent WTI spread" />;
+}
+
+export function OilPricesChart({ points, seriesKey, visibleDurationMs, theme, locale, placeholder, onHover }: Omit<HistoryChartProps<PremiumHistoryPoint>, 'onLoadMore'>) {
+  const hostRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<IChartApi | null>(null);
+  const brentRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const wtiRef = useRef<ISeriesApi<'Line'> | null>(null);
+  const onHoverRef = useRef(onHover);
+  const pointByTimeRef = useRef<Map<number, PremiumHistoryPoint>>(new Map());
+  const shownKeyRef = useRef<string | null>(null);
+  onHoverRef.current = onHover;
+
+  useEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    const chart = createChart(host, {
+      autoSize: true,
+      layout: { background: { type: ColorType.Solid, color: 'transparent' }, fontFamily: "'Manrope', ui-sans-serif, system-ui, sans-serif", fontSize: 12 },
+      grid: { vertLines: { visible: false }, horzLines: { visible: true } },
+      rightPriceScale: { borderVisible: false },
+      timeScale: { borderVisible: false, secondsVisible: false, timeVisible: true },
+      crosshair: { mode: CrosshairMode.Normal },
+    });
+    const brent = chart.addSeries(LineSeries, { color: '#f5a34c', lineWidth: 2, priceFormat: { type: 'price', precision: 2, minMove: 0.01 } });
+    const wti = chart.addSeries(LineSeries, { color: '#887ef1', lineWidth: 2, priceFormat: { type: 'price', precision: 2, minMove: 0.01 } });
+    chart.subscribeCrosshairMove((param) => {
+      const point = param.seriesData.get(brent) as { time: UTCTimestamp } | undefined;
+      onHoverRef.current(point ? pointByTimeRef.current.get(point.time) ?? null : null);
+    });
+    chartRef.current = chart;
+    brentRef.current = brent;
+    wtiRef.current = wti;
+    return () => { chartRef.current = null; brentRef.current = null; wtiRef.current = null; chart.remove(); };
+  }, []);
+
+  useEffect(() => {
+    const palette = PREMIUM_PALETTES[theme];
+    chartRef.current?.applyOptions({
+      layout: { background: { type: ColorType.Solid, color: 'transparent' }, textColor: palette.label },
+      grid: { horzLines: { color: palette.grid } },
+      localization: { locale },
+      crosshair: {
+        vertLine: { color: palette.crosshair, style: LineStyle.Dashed },
+        horzLine: { color: palette.crosshair, style: LineStyle.Dashed },
+      },
+    });
+  }, [theme, locale]);
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || !brentRef.current || !wtiRef.current) return;
+    pointByTimeRef.current = new Map(points.map((point) => [Math.floor(point.time / 1000), point]));
+    brentRef.current.setData(points.map((point) => ({ time: Math.floor(point.time / 1000) as UTCTimestamp, value: point.adrClose })));
+    wtiRef.current.setData(points.map((point) => ({ time: Math.floor(point.time / 1000) as UTCTimestamp, value: point.hedgeClose })));
+    if (shownKeyRef.current !== seriesKey && points.length > 1) {
+      shownKeyRef.current = seriesKey;
+      const latestTime = points[points.length - 1].time;
+      const first = Math.max(0, points.findIndex((point) => point.time >= latestTime - visibleDurationMs));
+      chart.timeScale().setVisibleLogicalRange({ from: first, to: points.length });
+    }
+  }, [points, seriesKey, visibleDurationMs]);
+
+  return <div className="oil-prices-chart">
+    <div className="chart-host" ref={hostRef} role="img" aria-label={`Brent and WTI prices. ${points.length} aligned points.`} />
+    {points.length < 2 && <span className="chart-placeholder">{placeholder}</span>}
+  </div>;
 }
 
 export function PriceDifferenceHistoryChart(props: HistoryChartProps<PriceDifferenceHistoryPoint>) {

@@ -1,4 +1,4 @@
-export type StrategyRouteKind = 'position' | 'auto' | 'premium' | 'boros';
+export type StrategyRouteKind = 'position' | 'auto' | 'premium' | 'oil-spread' | 'boros';
 
 export type FrontendRoute =
   | { workspace: 'Trade' }
@@ -13,6 +13,7 @@ const STRATEGY_PATHS: Record<StrategyRouteKind, string> = {
   position: '/strategies/paired-position',
   auto: '/strategies/price-difference',
   premium: '/strategies/sk-hynix-premium',
+  'oil-spread': '/strategies/bz-cl-spread',
   boros: '/strategies/boros',
 };
 

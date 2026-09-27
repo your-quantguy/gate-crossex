@@ -186,6 +186,22 @@ button, a { -webkit-tap-highlight-color: transparent; }
 .premium-history-summary dl div:last-child { border: 0; }
 .premium-history-summary dt { color: #5f706a; font-size: var(--text-caption); font-weight: 600; text-transform: uppercase; letter-spacing: .07em; }
 .premium-history-summary dd { margin: 0; color: #c6cfcb; font-family: var(--font-sans); font-size: var(--text-body); }
+.oil-history-panel .premium-history-controls > div { flex-wrap: wrap; }
+.oil-spread-reference { display: flex; justify-content: space-between; gap: 8px 20px; flex-wrap: wrap; padding: 10px 20px; border-bottom: 1px solid var(--line); color: var(--text); font-size: var(--text-small); }
+.oil-spread-reference small { color: #82918c; }
+.oil-spread-stats { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 0; margin: 0; border-bottom: 1px solid var(--line); }
+.oil-spread-stats div { display: grid; gap: 5px; padding: 13px 16px; border-right: 1px solid var(--line); }
+.oil-spread-stats div:last-child { border-right: 0; }
+.oil-spread-stats dt { color: #7d8c87; font-size: var(--text-caption); }
+.oil-spread-stats dd { margin: 0; color: #c6cfcb; font-size: var(--text-body); font-weight: 700; }
+.oil-prices-head { display: flex; justify-content: space-between; padding: 12px 20px; border-top: 1px solid var(--line); color: #c6cfcb; font-size: var(--text-small); font-weight: 700; }
+.oil-prices-head small { display: flex; align-items: center; gap: 6px; color: #82918c; }
+.oil-prices-head i { display: inline-block; width: 12px; border-top: 2px solid #f5a34c; }
+.oil-prices-head i:nth-of-type(2) { margin-left: 10px; border-color: #887ef1; }
+.oil-prices-chart { position: relative; height: 240px; }
+.oil-prices-chart .chart-host { position: absolute; inset: 0; }
+@media (max-width: 1050px) { .oil-spread-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); } .oil-spread-stats div:nth-child(3) { border-right: 0; } }
+@media (max-width: 550px) { .oil-spread-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } .oil-spread-stats div:nth-child(odd) { border-right: 1px solid var(--line); } .oil-spread-stats div:nth-child(even) { border-right: 0; } }
 .premium-history-chart { position: relative; height: 330px; }
 .premium-history-chart .chart-host { position: absolute; inset: 0; }
 .compact-method > .hedge-sizing-label { margin-top: 11px; }

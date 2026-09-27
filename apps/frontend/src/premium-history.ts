@@ -29,6 +29,7 @@ export function buildPremiumHistory(
   hedgeCandles: Candle[],
   adrRatio: number,
   since: number,
+  metric: 'PERCENT' | 'ABSOLUTE' = 'PERCENT',
 ): PremiumHistoryPoint[] {
   if (!Number.isFinite(adrRatio) || adrRatio <= 0) return [];
 
@@ -41,7 +42,9 @@ export function buildPremiumHistory(
     if (!Number.isFinite(adrClose) || adrClose <= 0 || hedgeClose === undefined || !Number.isFinite(hedgeClose) || hedgeClose <= 0) continue;
     points.push({
       time: candle.startTime,
-      value: ((adrClose * adrRatio) / hedgeClose - 1) * 100,
+      value: metric === 'ABSOLUTE'
+        ? adrClose - hedgeClose / adrRatio
+        : ((adrClose * adrRatio) / hedgeClose - 1) * 100,
       adrClose,
       hedgeClose,
     });

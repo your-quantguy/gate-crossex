@@ -129,6 +129,14 @@ function adrRatioOf(config: CreateStrategyInput): Decimal {
   return ratio.gt(0) ? ratio : ONE;
 }
 
+function premiumUnitOf(config: CreateStrategyInput): string {
+  return config.premiumMetric === 'ABSOLUTE' ? ' USD' : '%';
+}
+
+function premiumLabelOf(config: CreateStrategyInput): string {
+  return config.premiumMetric === 'ABSOLUTE' ? 'Spread' : 'Premium';
+}
+
 function oppositeSide(side: 'BUY' | 'SELL'): 'BUY' | 'SELL' {
   return side === 'BUY' ? 'SELL' : 'BUY';
 }
@@ -483,10 +491,10 @@ export class StrategyEngine {
       ? `${input.closePlan.orderCount} reduce-only slices · ${input.closePlan.intervalSeconds}s interval`
       : input.kind === 'premium'
       ? input.grid
-        ? `Grid ${input.gridLevels} × ${input.gridStepPct}% from ${input.entryPremiumPct}% premium · ${hedgeModeLabel}`
+        ? `Grid ${input.gridLevels} × ${input.gridStepPct}${premiumUnitOf(input)} from ${input.entryPremiumPct}${premiumUnitOf(input)} ${premiumLabelOf(input).toLowerCase()} · ${hedgeModeLabel}`
         : input.reduceOnly
-          ? `Reduce existing positions at ${shortPremium ? '≥' : '≤'} ${input.entryPremiumPct}% premium · ${hedgeModeLabel}`
-          : `Enter ${shortPremium ? '≥' : '≤'} ${input.entryPremiumPct}% · exit ${shortPremium ? '≤' : '≥'} ${input.takeProfitPremiumPct}% premium · ${hedgeModeLabel}`
+          ? `Reduce existing positions at ${shortPremium ? '≥' : '≤'} ${input.entryPremiumPct}${premiumUnitOf(input)} ${premiumLabelOf(input).toLowerCase()} · ${hedgeModeLabel}`
+          : `Enter ${shortPremium ? '≥' : '≤'} ${input.entryPremiumPct}${premiumUnitOf(input)} · exit ${shortPremium ? '≤' : '≥'} ${input.takeProfitPremiumPct}${premiumUnitOf(input)} ${premiumLabelOf(input).toLowerCase()} · ${hedgeModeLabel}`
       : input.kind === 'auto'
         ? `Enter ≥ ${input.entryBps} bps · exit ≤ ${input.takeProfitBps} bps`
         : `Enter ≥ ${input.entryBps} bps`;
@@ -635,7 +643,8 @@ export class StrategyEngine {
         this.database.prepare('UPDATE execution_strategies SET config_json = ?, updated_at = ? WHERE id = ?')
           .run(JSON.stringify(nextConfig), now, id);
         this.runtime.addStrategyLog(id, 'info', 'Take-profit updated',
-          `${previousTakeProfit}% → ${input.takeProfitPremiumPct}%`, '—', 'Monitoring live premium');
+          `${previousTakeProfit}${premiumUnitOf(nextConfig)} → ${input.takeProfitPremiumPct}${premiumUnitOf(nextConfig)}`, '—',
+          nextConfig.premiumMetric === 'ABSOLUTE' ? 'Monitoring live spread' : 'Monitoring live premium');
       })();
       actor.config = nextConfig;
       this.invalidateLedger(id);
@@ -1379,7 +1388,7 @@ export class StrategyEngine {
   }
 
   /**
-   * Executable ADR premium in percent — ADR price over ratio-scaled local price, minus one —
+   * Executable premium in percent or absolute price difference for oil spreads —
    * plus the two leg prices it was computed from, using the bid/ask each leg would actually
    * trade at for the given intent. Null while either quote is missing or stale.
    */
@@ -1399,7 +1408,9 @@ export class StrategyEngine {
     const fairValue = hedgePrice.div(adrRatioOf(config));
     if (!adrPrice.gt(0) || !fairValue.gt(0)) return null;
     return {
-      premium: adrPrice.div(fairValue).minus(1).mul(100),
+      premium: config.premiumMetric === 'ABSOLUTE'
+        ? adrPrice.minus(fairValue)
+        : adrPrice.div(fairValue).minus(1).mul(100),
       adrPrice,
       hedgePrice,
     };
@@ -1467,7 +1478,7 @@ export class StrategyEngine {
         if (quantity.gt(QUANTITY_EPSILON)) {
           const entryHedge = equalNotional ? quantity.mul(entryQuote.adrPrice).div(entryQuote.hedgePrice) : undefined;
           await this.executeTakerClip(actor, 'entry', quantity,
-            `Premium ${entryPremium.toFixed(2)}% ${shortPremium ? '≥' : '≤'} ${level.toFixed(2)}%`
+            `${premiumLabelOf(config)} ${entryPremium.toFixed(2)}${premiumUnitOf(config)} ${shortPremium ? '≥' : '≤'} ${level.toFixed(2)}${premiumUnitOf(config)}`
             + ` · quotes ${entryQuote.adrPrice.toString()} / ${entryQuote.hedgePrice.toString()}`,
           entryHedge);
           return;
@@ -1494,7 +1505,7 @@ export class StrategyEngine {
         const quantity = Decimal.min(matched.minus(perOrder.mul(topRung)), perOrder, matched);
         if (quantity.gt(QUANTITY_EPSILON)) {
           await this.executeTakerClip(actor, 'exit', quantity,
-            `Premium ${exitPremium.toFixed(2)}% ${shortPremium ? '≤' : '≥'} rung ${topRung.plus(1).toString()} exit ${exitLevel.toFixed(2)}%`
+            `${premiumLabelOf(config)} ${exitPremium.toFixed(2)}${premiumUnitOf(config)} ${shortPremium ? '≤' : '≥'} rung ${topRung.plus(1).toString()} exit ${exitLevel.toFixed(2)}${premiumUnitOf(config)}`
             + ` · quotes ${exitQuote.adrPrice.toString()} / ${exitQuote.hedgePrice.toString()}`,
           exitHedgeFor(quantity));
         }
@@ -1506,7 +1517,7 @@ export class StrategyEngine {
         const quantity = Decimal.min(perOrder, matched);
         if (quantity.gt(QUANTITY_EPSILON)) {
           await this.executeTakerClip(actor, 'exit', quantity,
-            `Premium ${exitPremium.toFixed(2)}% ${shortPremium ? '≤' : '≥'} ${takeProfitLevel.toFixed(2)}%`
+            `${premiumLabelOf(config)} ${exitPremium.toFixed(2)}${premiumUnitOf(config)} ${shortPremium ? '≤' : '≥'} ${takeProfitLevel.toFixed(2)}${premiumUnitOf(config)}`
             + ` · quotes ${exitQuote.adrPrice.toString()} / ${exitQuote.hedgePrice.toString()}`,
           exitHedgeFor(quantity));
         }

@@ -5,7 +5,7 @@ export interface DisplayStrategyLog extends StrategyLog {
   executionSpreadBps: string | null;
 }
 
-type StrategyLogMetricConfig = Pick<StrategyConfig, 'kind' | 'adrRatio' | 'leftSide' | 'rightSide'>;
+type StrategyLogMetricConfig = Pick<StrategyConfig, 'kind' | 'adrRatio' | 'premiumMetric' | 'leftSide' | 'rightSide'>;
 
 type StrategyLogLanguage = 'en' | 'zh';
 
@@ -32,7 +32,7 @@ const chineseResultText: Record<string, string> = {
  */
 export function localizeStrategyLogCondition(condition: string, language: StrategyLogLanguage): string {
   if (language !== 'zh') return condition;
-  return condition.replace(/\bPremium\b/gi, '溢价');
+  return condition.replace(/\bPremium\b/gi, '溢价').replace(/\bSpread\b/gi, '价差');
 }
 
 export function localizeStrategyLogResult(result: string, language: StrategyLogLanguage): string {
@@ -155,7 +155,9 @@ export function prepareStrategyLogs(logs: StrategyLog[], config?: StrategyLogMet
       }
       return {
         ...log,
-        executionPremiumPct: (((leftPrice * ratio) / rightPrice - 1) * 100).toFixed(2),
+        executionPremiumPct: (config.premiumMetric === 'ABSOLUTE'
+          ? leftPrice - rightPrice / ratio
+          : ((leftPrice * ratio) / rightPrice - 1) * 100).toFixed(2),
         executionSpreadBps: null,
       };
     }
