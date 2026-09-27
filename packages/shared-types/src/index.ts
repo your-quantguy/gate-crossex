@@ -113,6 +113,12 @@ export const MARKET_ASSET_ALIASES = [
     nativeAsset: 'SKHX',
     canonicalAsset: 'SKHYNIX',
   },
+  {
+    venue: 'HYPERLIQUID',
+    businessType: 'FUTURE',
+    nativeAsset: 'BRENTOIL',
+    canonicalAsset: 'BZ',
+  },
 ] as const satisfies readonly MarketAssetAlias[];
 
 function marketAssetAliasKey(venue: string, businessType: string, asset: string): string {
@@ -919,6 +925,8 @@ export const StrategyConfigSchema = z.object({
   kind: z.enum(['position', 'auto', 'premium']),
   asset: z.string(),
   hedgeAsset: z.string().optional(),
+  /** ABSOLUTE compares the two executable prices in USD rather than a percentage premium. */
+  premiumMetric: z.enum(['PERCENT', 'ABSOLUTE']).optional(),
   adrRatio: PositiveDecimalTextSchema.optional(),
   hedgeMode: z.enum(['SHARE_RATIO', 'EQUAL_NOTIONAL']).optional(),
   leftLeverage: PositiveDecimalTextSchema.optional(),

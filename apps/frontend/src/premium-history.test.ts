@@ -21,6 +21,15 @@ describe('buildPremiumHistory', () => {
     expect(points[1].value).toBeCloseTo(36);
   });
 
+  it('calculates the aligned Brent minus WTI price difference in USD', () => {
+    const points = buildPremiumHistory(
+      [candle(1_000, '98.6'), candle(2_000, '97.2')],
+      [candle(1_000, '93.4'), candle(2_000, '94.1')],
+      1, 0, 'ABSOLUTE',
+    );
+    expect(points.map((point) => point.value)).toEqual([expect.closeTo(5.2), expect.closeTo(3.1)]);
+  });
+
   it('keeps only timestamps shared by both legs and inside the requested range', () => {
     const points = buildPremiumHistory(
       [candle(1_000, '220'), candle(2_000, '225'), candle(3_000, '230')],

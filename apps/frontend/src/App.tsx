@@ -71,6 +71,7 @@ function TopbarNavigationContent({ label, glyph, iconSrc }: { label: string; gly
 const strategyPages: Array<{ kind: StrategyKind; glyph: string; label: string; detail: string }> = [
   { kind: 'position', glyph: '◎', label: 'Cross-exchange hedge', detail: 'Execute a fixed two-venue position, then stop' },
   { kind: 'premium', glyph: '≒', label: 'SK hynix premium bot', detail: 'Trade the SK hynix ADR premium vs the Korean listing' },
+  { kind: 'oil-spread', glyph: '≋', label: 'BZ / CL oil spread bot', detail: 'Trade the Brent–WTI price difference' },
 ];
 
 const DIALOG_FOCUSABLE = [
@@ -241,7 +242,7 @@ function AccountManagerDialog({
         <section className="account-switch-strategies" aria-labelledby="affected-strategies-title">
           <h3 id="affected-strategies-title">{t('Strategies that will be paused')} <span>{pendingSwitch.strategies.length || '—'}</span></h3>
           {pendingSwitch.strategies.length > 0 ? pendingSwitch.strategies.map((strategy) => <div key={strategy.id}>
-            <span><strong>{strategy.id}</strong><small>{strategy.config.asset} · {t(strategy.kind === 'auto' ? 'Price-difference bot' : strategy.kind === 'premium' ? 'SK hynix premium bot' : 'Cross-exchange hedge')}</small></span>
+            <span><strong>{strategy.id}</strong><small>{strategy.config.asset} · {t(strategy.kind === 'auto' ? 'Price-difference bot' : strategy.kind === 'premium' ? strategy.config.premiumMetric === 'ABSOLUTE' ? 'BZ / CL oil spread bot' : 'SK hynix premium bot' : 'Cross-exchange hedge')}</small></span>
             <em>{t('Running')}</em>
           </div>) : <p>{t('The backend detected a newly running strategy. Confirm to pause all affected strategies before switching.')}</p>}
         </section>
@@ -1062,7 +1063,8 @@ function App() {
   const content = useMemo(() => {
     if (workspace === 'Trade') return <TradingView asset={selectedAsset} catalog={availableCatalog} onSelectAsset={selectAsset} marketSnapshot={marketSnapshot} tradingSnapshot={tradingSnapshot} authenticatedPortfolio={authenticatedPortfolio} balances={balances} fees={fees} orderBook={orderBook} publicTrades={publicTrades} candleSeries={candleSeries} candleBackfilling={candleBackfilling} watchMarket={watchMarket} seedCandles={seedCandles} onTradingChanged={refreshTrading} onPositionsRefresh={refreshPositions} tradingMode={tradingMode} onOpenModeDialog={openModeDialog} favorites={favorites} onToggleFavorite={toggleFavorite} confirmOrders={confirmOrders} onSetConfirmOrders={setConfirmOrders} />;
     if (workspace === 'Strategy') {
-      if (strategyKind === 'premium') return <PremiumStrategyView marketSnapshot={marketSnapshot} catalog={availableCatalog} strategies={activeAccountStrategies} balances={balances} authenticatedPortfolio={authenticatedPortfolio} tradingSnapshot={tradingSnapshot} tradingMode={tradingMode} onOpenModeDialog={openModeDialog} onStrategiesChanged={refreshStrategies} onPositionsRefresh={refreshPositions} candleSeries={candleSeries} watchQuotes={watchQuotes} watchKlines={watchKlines} />;
+      if (strategyKind === 'premium') return <PremiumStrategyView key="hynix" marketSnapshot={marketSnapshot} catalog={availableCatalog} strategies={activeAccountStrategies} balances={balances} authenticatedPortfolio={authenticatedPortfolio} tradingSnapshot={tradingSnapshot} tradingMode={tradingMode} onOpenModeDialog={openModeDialog} onStrategiesChanged={refreshStrategies} onPositionsRefresh={refreshPositions} candleSeries={candleSeries} watchQuotes={watchQuotes} watchKlines={watchKlines} />;
+      if (strategyKind === 'oil-spread') return <PremiumStrategyView key="oil" variant="oil" marketSnapshot={marketSnapshot} catalog={availableCatalog} strategies={activeAccountStrategies} balances={balances} authenticatedPortfolio={authenticatedPortfolio} tradingSnapshot={tradingSnapshot} tradingMode={tradingMode} onOpenModeDialog={openModeDialog} onStrategiesChanged={refreshStrategies} onPositionsRefresh={refreshPositions} candleSeries={candleSeries} watchQuotes={watchQuotes} watchKlines={watchKlines} />;
       if (strategyKind === 'boros') return <BorosStrategyView marketSnapshot={marketSnapshot} catalog={availableCatalog} balances={balances} fees={fees} feesReady={feesReady} strategies={activeAccountStrategies} authenticatedPortfolio={authenticatedPortfolio} tradingSnapshot={tradingSnapshot} tradingMode={tradingMode} onOpenModeDialog={openModeDialog} onStrategiesChanged={refreshStrategies} onPositionsRefresh={refreshPositions} watchQuotes={watchQuotes} />;
       return <StrategyView mode={strategyKind} prefill={positionPrefill} marketSnapshot={marketSnapshot} catalog={availableCatalog} fees={fees} strategies={activeAccountStrategies} balances={balances} authenticatedPortfolio={authenticatedPortfolio} tradingSnapshot={tradingSnapshot} tradingMode={tradingMode} onOpenModeDialog={openModeDialog} onStrategiesChanged={refreshStrategies} onPositionsRefresh={refreshPositions} watchQuotes={watchQuotes} />;
     }

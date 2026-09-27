@@ -30,6 +30,7 @@ export const CreateStrategyInputSchema = z.object({
   asset: z.string().regex(/^[A-Z0-9]{2,20}$/),
   /** premium: ticker of the local listing that hedges the ADR leg (e.g. SKHYNIX for SKHY). */
   hedgeAsset: z.string().regex(/^[A-Z0-9]{2,20}$/).optional(),
+  premiumMetric: z.enum(['PERCENT', 'ABSOLUTE']).default('PERCENT'),
   /** premium: ADR shares per one hedge-leg share (SK hynix: 1 Korean share ≈ 10 ADRs). */
   adrRatio: decimalText.optional(),
   /**
@@ -48,7 +49,7 @@ export const CreateStrategyInputSchema = z.object({
   /** Position strategies may accept a bounded opening cost, represented by a negative spread. */
   entryBps: signedDecimalText.optional(),
   takeProfitBps: decimalText.optional(),
-  /** premium: absolute premium levels in percent; signed because ADRs can trade at a discount. */
+  /** Premium thresholds: percent by default, USD price difference for ABSOLUTE. */
   entryPremiumPct: signedDecimalText.optional(),
   takeProfitPremiumPct: signedDecimalText.optional(),
   grid: z.boolean().default(false),

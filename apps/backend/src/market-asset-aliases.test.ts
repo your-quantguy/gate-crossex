@@ -7,6 +7,13 @@ describe('market asset aliases', () => {
     expect(nativeMarketAsset('HYPERLIQUID', 'FUTURE', 'SKHYNIX')).toBe('SKHX');
   });
 
+  it('maps Hyperliquid BRENTOIL to BZ without changing other venues', () => {
+    expect(canonicalMarketAsset('HYPERLIQUID', 'FUTURE', 'BRENTOIL')).toBe('BZ');
+    expect(nativeMarketAsset('HYPERLIQUID', 'FUTURE', 'BZ')).toBe('BRENTOIL');
+    expect(nativeMarketAsset('BINANCE', 'FUTURE', 'BZ')).toBe('BZ');
+    expect(nativeMarketAsset('HYPERLIQUID', 'FUTURE', 'CL')).toBe('CL');
+  });
+
   it('keeps the distinct SKHY instrument and other venues unchanged', () => {
     expect(canonicalMarketAsset('HYPERLIQUID', 'FUTURE', 'SKHY')).toBe('SKHY');
     expect(canonicalMarketAsset('GATE', 'FUTURE', 'SKHX')).toBe('SKHX');

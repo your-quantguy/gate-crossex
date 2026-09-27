@@ -59,6 +59,14 @@ describe('strategy log grouping', () => {
 describe('strategy log execution premium', () => {
   const premiumConfig = { kind: 'premium', adrRatio: '10', leftSide: 'SELL', rightSide: 'BUY' } as const;
 
+  it('uses USD for absolute BZ/CL fill spreads', () => {
+    const prepared = prepareStrategyLogs([log({
+      id: 'oil', event: 'Position open Executed',
+      result: 'SELL HYPERLIQUID_FUTURE_BRENTOIL_USDC 1 @ 98.6 · BUY BINANCE_FUTURE_CL_USDT 1 @ 93.4',
+    })], { kind: 'premium', premiumMetric: 'ABSOLUTE', adrRatio: '1', leftSide: 'SELL', rightSide: 'BUY' });
+    expect(prepared[0]?.executionPremiumPct).toBe('5.20');
+  });
+
   it('calculates the opening premium from a combined backend execution', () => {
     const logs = [log({
       id: 'open',
